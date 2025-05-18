@@ -33,13 +33,6 @@ def get_all_images(directory):
     exts = [".jpg", ".jpeg", ".png", ".bmp"]
     return [p for p in Path(directory).rglob("*") if p.is_file() and p.suffix.lower() in exts]
 
-def upload_to_gcs(local_path, destination_blob_name):
-    client = storage.Client.from_service_account_json(GCS_KEY_PATH)
-    bucket = client.bucket(GCS_BUCKET)
-    blob = bucket.blob(destination_blob_name)
-    blob.upload_from_filename(local_path)
-    print(f"Uploaded: gs://{GCS_BUCKET}/{destination_blob_name}")
-
 def preprocess_image(image_path):
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -95,14 +88,12 @@ def decide_final_label(result_labels):
     return final_label
 
 def process_pipeline(image_path):
-    upload_to_gcs(image_path, GCS_IMAGE_PATH + Path(image_path).name)
 
     processed = preprocess_image(image_path)
     if processed is not None:
         processed_path = f"app/static/processed/{Path(image_path).stem}_processed.jpg"
         os.makedirs(os.path.dirname(processed_path), exist_ok=True)
         cv2.imwrite(processed_path, processed)
-        upload_to_gcs(processed_path, GCS_IMAGE_PATH + Path(processed_path).name)
 
     embedding = embed_image(image_path)
     if embedding is None:

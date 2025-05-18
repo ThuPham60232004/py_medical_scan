@@ -13,12 +13,11 @@
 | Bước                      | Mô tả                                                                          |
 | ------------------------- | ------------------------------------------------------------------------------ |
 | **1. Thêm ảnh**           | Người dùng chọn ảnh da liễu qua giao diện web hoặc API                         |
-| **2. Upload GCS**         | Ảnh được tải lên Google Cloud Storage để lưu trữ                               |
-| **3. Tiền xử lý**         | Resize, normalize ảnh trước khi đưa vào mô hình                                |
-| **4. Vector hóa ảnh**     | Sử dụng mô hình CLIP để chuyển ảnh thành embedding vector                      |
-| **5. Tìm ảnh tương đồng** | Dùng FAISS để tìm k ảnh gần nhất trong cơ sở dữ liệu đã có                     |
-| **6. Gán nhãn**           | Nhãn bệnh được gán dựa trên ảnh gần nhất                                       |
-| **7. Trả về nhãn chính xác nhất**           | Dùng FAISS quyết định nhãn chính xác nhất                                       |
+| **2. Tiền xử lý**         | Resize, normalize ảnh trước khi đưa vào mô hình                                |
+| **3. Vector hóa ảnh**     | Sử dụng mô hình CLIP để chuyển ảnh thành embedding vector                      |
+| **4. Tìm ảnh tương đồng** | Dùng FAISS để tìm k ảnh gần nhất trong cơ sở dữ liệu đã có                     |
+| **5. Gán nhãn**           | Nhãn bệnh được gán dựa trên ảnh gần nhất                                       |
+| **6. Trả về nhãn chính xác nhất**           | Dùng FAISS quyết định nhãn chính xác nhất                                       |
 ---
 
 ### **Ưu điểm V1**
