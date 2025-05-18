@@ -23,6 +23,7 @@ import re
 import requests
 import xml.etree.ElementTree as ET
 from sklearn.metrics.pairwise import cosine_similarity
+from itertools import chain
 from collections import Counter
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -668,6 +669,35 @@ def search_final(name):
             append_disease_to_json(LOCAL_DATASET_PATH, extract_medical_info_result)
             print("Upload file JSON lên GCS...")
             upload_json_to_gcs(GCS_BUCKET, GCS_DATASET_PATH, LOCAL_DATASET_PATH)
+def filter_duplicate_labels(labels):
+    seen = set()
+    result = []
+    for label in labels:
+        clean = "-".join(label.split("-")[1:]) if "-" in label else label
+        if clean not in seen:
+            seen.add(clean)
+            result.append(clean)
+    return result
+
+def get_disease_description_by_Gemini(labels):
+    """ Lấy mô tả bệnh từ nhãn bằng Gemini, trả về mô tả trên 1 dòng duy nhất """
+    result = {}
+    for label in labels:
+        prompt = f"""Bạn là một chuyên gia y tế có nhiều kinh nghiệm trong ngành da liễu.
+            Dựa vào nhãn bệnh "{label}", hãy tìm kiếm mô tả chi tiết về bệnh này trong cơ sở dữ liệu y khoa của bạn.
+            Vui lòng trả về kết quả **chỉ một dòng duy nhất, không có xuống dòng, không có dấu ngoặc, dấu ngoặc kép hay markdown**.
+            Định dạng kết quả phải theo mẫu: {label}: mô tả chi tiết bệnh.
+            VD: Thuỷ đậu: là các tổn thương dạng bóng nước trên da và niêm mạc. Sau khi virus xâm nhập cơ thể, ...
+            Chỉ trả về đúng kết quả theo định dạng trên, không thêm bất cứ mô tả hay lời giải thích nào khác.
+            """
+        try:
+            model = genai.GenerativeModel("gemini-2.0-flash")
+            response = model.generate_content(prompt)
+            single_line = " ".join(response.text.strip().split())
+            result[label] = single_line
+        except Exception as e:
+            print(f"Lỗi khi gọi Gemini: {e}")
+    return result
 
 def mainclient():
     download_from_gcs()
@@ -714,5 +744,12 @@ def mainclient():
             suitability = label_info.get("do_phu_hop")
             print(f"- {ket_qua} (Mức độ phù hợp: {suitability})")
             search_final(ket_qua)
+    print(final_labels)
+    flat_labels = list(chain.from_iterable(label for label in final_labels if isinstance(label, list)))
+    filter_labels = filter_duplicate_labels(flat_labels)
+    print(filter_labels)
+    label_descriptions =get_disease_description_by_Gemini(filter_labels)
+    for label, desc in label_descriptions.items():
+        print(f"- {desc}")
 if __name__ == "__main__":
     mainclient()
