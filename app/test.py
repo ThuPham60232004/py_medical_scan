@@ -81,14 +81,6 @@ def download_from_gcs():
         blob.download_to_filename(local_path)
         print(f"Tải về {gcs_path} to {local_path}")
         
-def upload_to_gcs(local_path, destination_blob_name):
-    """Upload file lên Google Cloud Storage."""
-    client = storage.Client.from_service_account_json("app/gsc-key.json")
-    bucket = client.bucket(GCS_BUCKET)
-    blob = bucket.blob(destination_blob_name)
-    blob.upload_from_filename(local_path)
-    print(f"Đã upload {local_path} lên GCS tại: gs://{GCS_BUCKET}/{destination_blob_name}")
-
 def preprocess_image(image_path):
     """Tiền xử lý ảnh bằng Gaussian Blur và Canny Edge Detection."""
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
@@ -108,31 +100,29 @@ def embed_image(image_path):
     with torch.no_grad():
         embedding = model.get_image_features(**inputs)
     return embedding.cpu().numpy().astype(np.float32)
-def generate_anomaly_map(image_path: str) -> Optional[np.ndarray]:
-    """
-    Sinh anomaly map từ ảnh đầu vào bằng ViT feature extractor và resize lại theo kích thước ảnh gốc.
-    """
-    try:
-        img = Image.open(image_path).convert("RGB")
-        original_size = img.size  
-        transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-        ])
-        img_tensor = transform(img).unsqueeze(0).to(device)
+def generate_anomaly_map(image_path: str) -> np.ndarray:
+    img_pil = Image.open(image_path).convert("RGB")
+    original_size = img_pil.size 
+    img_np = np.array(img_pil)  
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+    ])
+    img_tensor = transform(img_pil).unsqueeze(0).to(device)
+    with torch.no_grad():
+        features = vit_model.forward_features(img_tensor)
+    feature_map = features.mean(dim=1).squeeze().cpu().numpy()
+    anomaly_map = (feature_map - np.min(feature_map)) / (np.ptp(feature_map) + 1e-6)
+    anomaly_map_resized = cv2.resize(anomaly_map, original_size, interpolation=cv2.INTER_CUBIC)
+    anomaly_map_uint8 = (anomaly_map_resized * 255).astype(np.uint8)
+    heatmap = cv2.applyColorMap(anomaly_map_uint8, cv2.COLORMAP_JET)
+    img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+    overlay = cv2.addWeighted(img_bgr, 0.6, heatmap, 0.4, 0)
+    _, binary_mask = cv2.threshold(anomaly_map_uint8, 180, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(overlay, contours, -1, (0, 0, 255), 2)
 
-        with torch.no_grad():
-            features = vit_model.forward_features(img_tensor)  
-        feature_map = features.mean(dim=1).squeeze().cpu().numpy()
-        anomaly_map = (feature_map - np.min(feature_map)) / (np.ptp(feature_map) + 1e-6)
-        anomaly_map = (anomaly_map * 255).astype(np.uint8)
-        anomaly_map_resized = cv2.resize(anomaly_map, original_size, interpolation=cv2.INTER_CUBIC)
-
-        return anomaly_map_resized
-
-    except Exception as e:
-        print(f"Lỗi tạo Anomaly Map: {e}")
-        return None
+    return overlay
 
 def embed_anomaly_map(anomaly_map_path: str):
     """Nhúng anomaly map thành vector sử dụng mô hình CLIP."""
@@ -390,6 +380,9 @@ def ask_user_questions(questions,diease_name):
        
 def process_image(image_path):
     """Xử lý ảnh đầu vào, tạo Anomaly Map và nhúng Anomaly Map, tìm kiếm nhãn bệnh."""
+    result_labels = []
+    anomaly_result_labels = []
+
     processed = preprocess_image(image_path)
     anomaly_map = generate_anomaly_map(image_path)
     if processed is not None:
@@ -398,7 +391,6 @@ def process_image(image_path):
 
         processed_path = processed_dir / f"{Path(image_path).stem}_processed.jpg"
         cv2.imwrite(str(processed_path), processed)
-        upload_to_gcs(str(processed_path), GCS_IMAGE_PATH + str(processed_path.name))
         embedding = embed_image(image_path)
         if embedding is not None:
             result_labels = search_similar_images(embedding)
@@ -412,8 +404,9 @@ def process_image(image_path):
             if anomaly_map_embedding is not None:
                 anomaly_result_labels = search_similar_images(anomaly_map_embedding)
                 print("Kết quả tìm kiếm từ Anomaly Map:", anomaly_result_labels)
+
     final_labels = combine_labels(result_labels, anomaly_result_labels)
-    return final_labels, result_labels, anomaly_result_labels
+    return final_labels
 
 def decide_final_label(label_string):
     labels = label_string.split()
@@ -452,31 +445,8 @@ def filter_incorrect_labels_by_user_description(description: str, labels: list[s
         return None
     
 def get_all_images(directory):
-    return list(Path(directory).rglob("*"))
-
-
-def test_process_pipeline(ketqua):
-    Image_dir = "app/static/data_test"
-    get_all_images(Image_dir)
-    right_result=0
-    wrong_result=0
-    total_images=0
-    # duyệt qua từng ảnh trong thư mục
-    for image_path in get_all_images(Image_dir):
-        #Lấy tên ảnh bằng cách lấy tên file và thay thế các dấu _ bằng khoảng trắng
-        image_name = os.path.basename(image_path).replace("_", " ")
-
-        print(f"Processing {image_path}...")
-        result=process_pipeline(image_path,image_name)
-        print("Done.\n")
-        # Kiểm tra kết quả
-        if result == image_name:
-            right_result+=1
-        else:
-            wrong_result+=1
-        total_images+=1
-    print(f"Kết quả đúng : {right_result},Tỉ lệ đúng là: {right_result/total_images*100}%")
-    print(f"Kết quả sai : {wrong_result},Tỉ lệ sai là: {wrong_result/total_images*100}%")
+    exts = [".jpg", ".jpeg", ".png", ".bmp"]
+    return [p for p in Path(directory).rglob("*") if p.is_file() and p.suffix.lower() in exts]
 
 def generate_description(diease_name):
     prompt="""
@@ -509,9 +479,37 @@ def answer_question(question,disease_name):
     except Exception as e:
         print(f"Lỗi khi tạo mô tả với Gemini: {e}")
         return None
+
+def test_process_pipeline():
+    Image_dir = "app/static/data_test"
+    right_result = 0
+    wrong_result = 0
+    total_images = 0
+
+    for image_path in get_all_images(Image_dir):
+        image_name = os.path.basename(image_path).replace("_", " ")
+        print(f"\n=== Processing {image_path} ===")
+        
+        result = process_pipeline(image_path, image_name)
+        
+        print(f"Dự đoán: {result}")
+        print(f"Thực tế: {image_name}")
+
+        if result == image_name:
+            right_result += 1
+        else:
+            wrong_result += 1
+
+        total_images += 1
+        print("Done.\n")
+
+    print("\n=== TỔNG KẾT ===")
+    print(f"Kết quả đúng : {right_result}, Tỉ lệ đúng: {right_result / total_images * 100:.2f}%")
+    print(f"Kết quả sai  : {wrong_result}, Tỉ lệ sai : {wrong_result / total_images * 100:.2f}%")
+
     
 def process_pipeline(image_path,diease_name):
-    final_labels, result_labels, anomaly_result_labels=process_image(image_path)
+    final_labels=process_image(image_path)
     print("Chuỗi mô tả bệnh tổng hợp:", final_labels)
     user_description = generate_description(diease_name)
     if not user_description:
@@ -531,7 +529,7 @@ def process_pipeline(image_path,diease_name):
         return
 
     print("\n--- Trả lời các câu hỏi để phân biệt bệnh ---")
-    user_answers = ask_user_questions(questions)
+    user_answers = ask_user_questions(questions,diease_name)
     
     print("\n--- Mô tả bổ sung từ người dùng ---")
     print(user_answers)
@@ -551,56 +549,10 @@ def process_pipeline(image_path,diease_name):
             ket_qua = "-".join(label.split("-")[1:])
             suitability = label_info.get("do_phu_hop")
             print(f"- {ket_qua} (Mức độ phù hợp: {suitability})")
-    
-
     
 def mainclient():
     download_from_gcs()
     load_faiss_index()
-    image_path = "app/static/img_test/cellulitis.webp"
-    print("File tồn tại:", os.path.exists(image_path))
-    final_labels, result_labels, anomaly_result_labels=process_image(image_path)
-    print("Chuỗi mô tả bệnh tổng hợp:", final_labels)
-    user_description = collect_user_description()
-    if not user_description:
-        print("\nĐang chọn nhãn dựa trên hình ảnh và mô hình...")
-        final_diagnosis = decide_final_label(final_labels)
-        print(f"\nKết quả sơ bộ: {final_diagnosis}")
-        print("Thông báo: Vì bạn không cung cấp mô tả, kết quả có thể chưa chính xác.")
-        return
-    image_description = generate_description_with_Gemini(image_path)
-    print("Mô tả từ ảnh (Gemini):", image_description)
-    result_medical_entities = generate_medical_entities(user_description, image_description)
-    print(result_medical_entities)
-    questions = compare_descriptions_and_labels(result_medical_entities, final_labels)
-    print(final_labels)
-    if not questions:
-        print("Không tạo được câu hỏi phân biệt.")
-        return
-
-    print("\n--- Trả lời các câu hỏi để phân biệt bệnh ---")
-    user_answers = ask_user_questions(questions)
-    
-    print("\n--- Mô tả bổ sung từ người dùng ---")
-    print(user_answers)
-    combined_description = f"{result_medical_entities}\n\n{user_answers}"
-    print("\n--- Đang loại trừ nhãn không phù hợp ---")
-    result =filter_incorrect_labels_by_user_description(combined_description, final_labels)
-    if not result:
-        print("Không có kết quả từ Gemini.")
-        return
-    refined_labels = result.get("giu_lai", [])
-    if not refined_labels:
-        print("Không còn nhãn nào phù hợp. Đề xuất tham khảo bác sĩ.")
-    else:
-        print("Các nhãn còn lại sau loại trừ:")
-        for label_info in refined_labels:
-            label = label_info.get("label")
-            ket_qua = "-".join(label.split("-")[1:])
-            suitability = label_info.get("do_phu_hop")
-            print(f"- {ket_qua} (Mức độ phù hợp: {suitability})")
-
+    test_process_pipeline()
 if __name__ == "__main__":
     mainclient()
-    download_from_gcs()
-    load_faiss_index()
