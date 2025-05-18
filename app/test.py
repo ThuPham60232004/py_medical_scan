@@ -20,7 +20,10 @@ import logging
 from PIL import Image
 import textwrap
 import re
+import requests
+import xml.etree.ElementTree as ET
 from sklearn.metrics.pairwise import cosine_similarity
+from collections import Counter
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 load_dotenv()
@@ -433,6 +436,239 @@ def filter_incorrect_labels_by_user_description(description: str, labels: list[s
     except Exception as e:
         print(f"Lỗi khi tạo mô tả với Gemini: {e}")
         return None
+
+def upload_json_to_gcs(bucket_name: str, destination_blob_name: str, source_file_name: str):
+    client = storage.Client.from_service_account_json("app/gsc-key.json")
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(destination_blob_name)
+    blob.upload_from_filename(source_file_name)
+    print(f"Uploaded {source_file_name} to {destination_blob_name}.")
+    
+def append_disease_to_json(file_path: str, new_disease: dict):
+    with open(file_path, 'r+', encoding='utf-8') as f:
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError:
+            data = []
+        data.append(new_disease)
+        f.seek(0)
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.truncate()
+    print(f"Added new disease: {new_disease.get('name', '')}")
+def search_disease_in_json(file_path: str, disease_name: str):
+    with open(file_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    if not isinstance(data, list):
+        print("File JSON không phải là danh sách.")
+        return []
+
+    results = [
+        entry for entry in data
+        if isinstance(entry, dict) and disease_name.lower() in entry.get("Tên bệnh", "").lower()
+    ]
+    return results
+def generate_keyword(keyword):
+    prompt = f"""
+    Bạn  là một người có kiến thức sâu rộng về y khoa dựa vào keyword được truyền vào.
+    Keyword là tên bệnh tôi cần bạn tạo ra danh sách tên bệnh liên quan đến keyword đó.
+    Ví dụ tên bệnh là: Squamouscell thì bạn có thể liệt kê các keyword liên quan đến tên như: Squamouse, Squamouse cell, Squamouse Cancer,..
+    Tối đa  là 10 từ khóa liên quan đến tên bệnh đó.
+    Trả về dưới dạng json với cấu trúc như sau:
+    ```json
+    {{
+        "keyword": [
+            "keyword1",
+            "keyword2",
+            "keyword3",
+            "keyword4",
+            "keyword5",
+            "keyword6",
+            "keyword7",
+            "keyword8",
+            "keyword9",
+            "keyword10"
+        ]
+    }}
+    ```
+    """
+    try:
+        if not keyword:
+            return "Không có từ khóa truyền vào"
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        response = model.generate_content(prompt)
+        result = response.text.strip()
+        result = re.sub(r"^(?:\w+)?\n|\n$", "", result).strip()
+        
+        if not result:
+            return "Không có thông tin"
+        return result
+    except Exception as e:
+        print(f"Lỗi khi tạo từ khóa: {e}")
+        return "Xảy ra lỗi trong quá trình tạo từ khóa"
+    
+def search_medlineplus(ten_khoa_hoc):
+    if not ten_khoa_hoc or ten_khoa_hoc == "Không tìm thấy":
+        return "Không có tên bệnh truyền vào"
+    print(f"Tìm kiếm thông tin bệnh '{ten_khoa_hoc}' trên MedLinePlus...")
+    keyword = generate_keyword(ten_khoa_hoc)
+
+    url = 'https://wsearch.nlm.nih.gov/ws/query'
+    params = {
+        'db': 'healthTopics',
+        'term': f'{ten_khoa_hoc}'
+    }
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        print("Tìm kiếm thành công!")
+
+        cleaned_content = clean_xml_content(response.content)
+        print (cleaned_content)
+        return cleaned_content
+    
+    for item in keyword.get("keyword"):
+        print(f"Tìm kiếm thông tin bệnh '{item}' trên MedLinePlus...")
+        params = {
+            'db': 'healthTopics',
+            'term': f'{item}'
+        }
+        response = requests.get(url, params=params)
+        if response.status_code == 200:
+            print("Tìm kiếm thành công!")
+            cleaned_content = clean_xml_content(response.content)
+            return cleaned_content
+    return None
+def clean_xml_content(xml_content: str) -> str:
+    """
+    Nhận vào một chuỗi XML, trích xuất và kết hợp nội dung văn bản từ tất cả các phần tử.
+
+    Args:
+        xml_content (str): Chuỗi XML đầu vào.
+
+    Returns:
+        str: Văn bản được trích xuất và làm sạch từ XML.
+    """
+    try:
+        root = ET.fromstring(xml_content)
+        text_nodes = [elem.text.strip() for elem in root.iter() if elem.text and elem.text.strip()]
+        return ' '.join(text_nodes)
+
+    except ET.ParseError as e:
+        print(f"Lỗi phân tích XML: {e}")
+        return ""
+    
+def decide_final_label(label_string):
+    labels = label_string.split()
+    processed_labels = [label.split('-', 1)[1] if '-' in label else label for label in labels]
+    counter = Counter(processed_labels)
+    most_common_two = counter.most_common(1)
+    return most_common_two[0][0]
+
+def extract_medical_info(text):
+    prompt = f"""
+    Dịch văn bản về tiếng việt
+    Bạn là một chuyên gia y tế, bạn có khả năng trích xuất thông tin y khoa từ văn bản.
+    Hãy trích xuất thông tin y khoa từ văn bản dưới dạng JSON hợp lệ **không chứa Markdown**.
+    Chỉ lấy kết quả đầu tiên mà bạn tìm được
+    Hãy trích xuất thật chi tiết
+
+    Văn bản đầu vào là:
+    {text}
+    {{
+        "Tên bệnh":"", Tên bệnh là tên của bệnh được ghi ở đầu tiêu đề
+        "Tên khoa học": "", Tên khoa học thường được ghi bằng tiếng anh hoặc tiếng latinh, nếu không thấy thì tên khoa học sẽ bằng tên bệnh nhưng chỉ lấy phần tiếng anh
+        "Triệu chứng": "", Triệu chứng là những dấu hiệu mà bệnh nhân có thể gặp phải khi mắc bệnh này, nếu không tìm thấy thì có thể đổi từ tên bệnh sang tiếng anh
+        "Vị trí xuất hiện": "", Vị trí xuất hiện là nơi mà bệnh này có thể xảy ra trên cơ thể người,
+        "Nguyên nhân": "",  Nguyên nhân là lý do mà bệnh này xảy ra
+        "Tiêu chí chẩn đoán": "",  Tiêu chí chẩn đoán là những tiêu chí mà bác sĩ có thể sử dụng để xác định bệnh này
+        "Chẩn đoán phân biệt": "",  Chẩn đoán phân biệt là những bệnh khác mà bác sĩ có thể xem xét khi xác định bệnh này
+        "Điều trị": "",  Điều trị là những phương pháp mà bác sĩ có thể sử dụng để điều trị bệnh này
+        "Phòng bệnh": "" , Phòng bệnh là những biện pháp mà bác sĩ có thể khuyên bệnh nhân thực hiện để ngăn ngừa bệnh này
+        "Các loại thuốc":
+        [{{
+            "Tên thuốc": "", 
+            "Liều lượng": "", 
+            "Thời gian sử dụng": ""
+        }}]
+    }}
+
+    - Nếu không có thông tin, đặt giá trị "Không tìm thấy".
+    - Không thêm giải thích, không in Markdown, không thêm ký tự thừa.
+    """
+
+    try:
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        response = model.generate_content(prompt)
+        raw_text = response.text if hasattr(response, "text") else response.parts[0].text
+        raw_text = re.sub(r"^```json\n|\n```$", "", raw_text)
+        extracted_info = json.loads(raw_text)
+        completed_info = clean_text_json(extracted_info)
+        return completed_info
+
+    except json.JSONDecodeError:
+        print("Lỗi: Không thể parse JSON từ Gemini.")
+        return {}
+    except Exception as e:
+        print(f"Lỗi trích xuất thông tin y khoa: {e}")
+        return {}
+    
+def clean_text(text: str) -> str:
+    """Làm sạch một chuỗi văn bản."""
+    if not isinstance(text, str):
+        return text
+    text = re.sub(r'[\\\n\r\t\*\]]', ' ', text)
+    text = re.sub(r'\s+', ' ', text) 
+    return text.strip()
+   
+def clean_text_json(data):
+    """Làm sạch toàn bộ văn bản trong một cấu trúc JSON."""
+    if isinstance(data, dict):
+        return {key: clean_text_json(value) for key, value in data.items()}
+    elif isinstance(data, list):
+        return [clean_text_json(item) for item in data]
+    else:
+        return clean_text(data)
+def translate_disease_name(disease_name):
+    prompt=f"""Bạn là một chuyên gia y tế có hiểu biết sâu rộng về y khoa.
+    Bạn có khả năng dịch tên bệnh từ tiếng anh sang tiếng việt.
+    Tên bệnh được truyền vào là: {disease_name}
+    Hãy dịch tên bệnh đó sang tiếng việt.
+    Trả về tên bệnh đóđó
+    """
+    try:
+        if(not disease_name):
+            return "Không có tên bệnh truyền vào"
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        response = model.generate_content(prompt)
+        result = response.text.strip()
+        result = re.sub(r"^(?:\w+)?\n|\n$", "", result).strip()
+
+        if not result:
+            return "Chúng tôi không thể dịch tên bệnh này"
+        return result
+    except Exception as e:
+        print(f"Lỗi khi dịch tên bệnh: {e}")
+        return "Xảy ra lỗi trong quá trình dịch tên bệnh"
+def search_final(name):
+    translate_name=translate_disease_name(name)
+    print(f"Tên bệnh đã dịch: {translate_name}")
+    search_json_result = search_disease_in_json(LOCAL_DATASET_PATH, translate_name)
+    if search_json_result:
+        print(f"Kết quả tìm kiếm trong file JSON: {search_json_result}")
+    else:
+        print(f"Không tìm thấy tên bệnh '{translate_name}' trong file JSON.")
+        print ("Bắt đầu tìm kiếm bằng MedlinePlus...")
+        search_medline_result = search_medlineplus(name)
+        print(f"Kết quả tìm kiếm MedlinePlus: {search_medline_result}")
+        print ("Bắt đầu trích xuất thông tin y khoa từ MedlinePlus...")
+        extract_medical_info_result = extract_medical_info(search_medline_result)
+        if extract_medical_info_result:
+            print(f"Kết quả trích xuất thông tin y khoa: {extract_medical_info_result}")
+            print("Đang thêm thông tin vào file JSON...")
+            append_disease_to_json(LOCAL_DATASET_PATH, extract_medical_info_result)
+            print("Upload file JSON lên GCS...")
+            upload_json_to_gcs(GCS_BUCKET, GCS_DATASET_PATH, LOCAL_DATASET_PATH)
+
 def mainclient():
     download_from_gcs()
     load_faiss_index()
@@ -440,6 +676,12 @@ def mainclient():
     print("File tồn tại:", os.path.exists(image_path))
     final_labels, result_labels, anomaly_result_labels=process_image(image_path)
     user_description = collect_user_description()
+    if not user_description:
+        print("\nĐang chọn nhãn dựa trên hình ảnh và mô hình...")
+        final_diagnosis = decide_final_label(final_labels)
+        print(f"\nKết quả sơ bộ: {final_diagnosis}")
+        print("Thông báo: Vì bạn không cung cấp mô tả, kết quả có thể chưa chính xác.")
+        return
     image_description = generate_description_with_Gemini(image_path)
     print("Mô tả từ ảnh (Gemini):", image_description)
     result_medical_entities = generate_medical_entities(user_description, image_description)
@@ -471,5 +713,6 @@ def mainclient():
             ket_qua = "-".join(label.split("-")[1:])
             suitability = label_info.get("do_phu_hop")
             print(f"- {ket_qua} (Mức độ phù hợp: {suitability})")
+            search_final(ket_qua)
 if __name__ == "__main__":
     mainclient()
