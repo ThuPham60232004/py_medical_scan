@@ -242,6 +242,29 @@ def process_pipeline(image_path: str):
 
     return final_label
 
+def test_process_pipeline():
+    Image_dir = "app/static/data_test"
+    get_all_images(Image_dir)
+    right_result=0
+    wrong_result=0
+    total_images=0
+    # duyệt qua từng ảnh trong thư mục
+    for image_path in get_all_images(Image_dir):
+        #Lấy tên ảnh bằng cách lấy tên file và thay thế các dấu _ bằng khoảng trắng
+        image_name = os.path.basename(image_path).replace("_", " ")
+
+        print(f"Processing {image_path}...")
+        result=process_pipeline(image_path)
+        print("Done.\n")
+        # Kiểm tra kết quả
+        if result == image_name:
+            right_result+=1
+        else:
+            wrong_result+=1
+        total_images+=1
+    print(f"Kết quả đúng : {right_result},Tỉ lệ đúng là: {right_result/total_images*100}%")
+    print(f"Kết quả sai : {wrong_result},Tỉ lệ sai là: {wrong_result/total_images*100}%")
+
 def main():
     image_path = "app/static/img_test/cellulitis.webp"
     if not os.path.exists(image_path):
