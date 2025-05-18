@@ -18,7 +18,7 @@
 | **4. Vector hóa ảnh**     | Sử dụng mô hình CLIP để chuyển ảnh thành embedding vector                      |
 | **5. Tìm ảnh tương đồng** | Dùng FAISS để tìm k ảnh gần nhất trong cơ sở dữ liệu đã có                     |
 | **6. Gán nhãn**           | Nhãn bệnh được gán dựa trên ảnh gần nhất                                       |
-
+| **7. Trả về nhãn chính xác nhất**           | Dùng FAISS quyết định nhãn chính xác nhất                                       |
 ---
 
 ### **Ưu điểm V1**

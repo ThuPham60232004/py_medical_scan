@@ -5,6 +5,7 @@ import torch
 import faiss
 from PIL import Image
 from pathlib import Path
+from collections import Counter
 from google.cloud import storage
 from transformers import CLIPProcessor, CLIPModel
 from dotenv import load_dotenv
@@ -13,21 +14,22 @@ load_dotenv()
 
 GCS_BUCKET = "kltn-2025"
 GCS_IMAGE_PATH = "uploaded_images/"
-GCS_KEY_PATH = storage.Client.from_service_account_json("app/gsc-key.json")
+GCS_KEY_PATH = "app/gsc-key.json"
 
 LOCAL_INDEX_PATH = "app/static/faiss/faiss_index.bin"
 LOCAL_LABELS_PATH = "app/static/labels/labels.npy"
 INDEX_DIM = 512  
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
 model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
 index = None
-labels = []
+labels = {}
 
 def upload_to_gcs(local_path, destination_blob_name):
-    client = storage.Client.from_service_account_json("app/gsc-key.json")
+    client = storage.Client.from_service_account_json(GCS_KEY_PATH)
     bucket = client.bucket(GCS_BUCKET)
     blob = bucket.blob(destination_blob_name)
     blob.upload_from_filename(local_path)
@@ -60,7 +62,7 @@ def load_faiss_index():
         print("FAISS index not found!")
 
     if os.path.exists(LOCAL_LABELS_PATH):
-        labels = np.load(LOCAL_LABELS_PATH, allow_pickle=True).tolist()
+        labels = np.load(LOCAL_LABELS_PATH, allow_pickle=True).item()
         print(f"Labels loaded: {len(labels)}")
     else:
         print("Labels file not found!")
@@ -80,22 +82,35 @@ def search_similar_images(query_vector, top_k=5):
             results.append("unknown")
     return results
 
+def decide_final_label(result_labels):
+    if not result_labels:
+        return "Không xác định"
+    label_counts = Counter(result_labels)
+    final_label, _ = label_counts.most_common(1)[0]
+    return final_label
+
 def process_pipeline(image_path):
     upload_to_gcs(image_path, GCS_IMAGE_PATH + Path(image_path).name)
+
     processed = preprocess_image(image_path)
     if processed is not None:
         processed_path = f"app/static/processed/{Path(image_path).stem}_processed.jpg"
         os.makedirs(os.path.dirname(processed_path), exist_ok=True)
         cv2.imwrite(processed_path, processed)
         upload_to_gcs(processed_path, GCS_IMAGE_PATH + Path(processed_path).name)
+
     embedding = embed_image(image_path)
     if embedding is None:
         print("Không thể nhúng ảnh.")
         return
+
     result_labels = search_similar_images(embedding)
-    print("Kết quả gán nhãn & chuẩn đoán:")
+    print("Kết quả gán nhãn:")
     for idx, label in enumerate(result_labels, 1):
         print(f"{idx}. {label}")
+
+    final_label = decide_final_label(result_labels)
+    print(f"\nNhãn cuối cùng được chọn: {final_label}")
 
 def main():
     image_path = "app/static/img_test/cellulitis.webp"
