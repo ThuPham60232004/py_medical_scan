@@ -452,8 +452,9 @@ def generate_description(diease_name):
     prompt="""
     Bạn là một bệnh nhân đang bị bệnh {diease_name}.
     Bạn hãy mô tả triệu chứng của bạn bao gồm vị trí,thời gian,hình dạng và màu sắc,bạn cảm thấy thế nào, có lan rộng không
-    Ví dụ: Tôi bị ngứa ở tay, đã 2 tuần rồi, có mụn nước màu đỏ, cảm thấy ngứa và hơi đau, không lan rộng.
-    Trả về chuỗi có dạng như trên
+    Trả về chuỗi có dạng như sau:
+    "Triệu chứng xuất hiện ở [vị trí], đã kéo dài [thời gian]. Vùng da có biểu hiện [hình dạng và màu sắc] và cảm giác [cảm giác]. Triệu chứng: [lan rộng hay không]."
+    Ví dụ: "Triệu chứng xuất hiện ở tay, đã kéo dài 2 tuần. Vùng da có biểu hiện đỏ và cảm giác ngứa. Triệu chứng: không lan rộng.
     """
     try:
         model = genai.GenerativeModel('gemini-2.0-flash')
@@ -467,9 +468,8 @@ def generate_description(diease_name):
 def answer_question(question,disease_name):
     prmopt="""Bạn là một bệnh nhân đang mắc phải bệnh {disease_name}. Hiện tại bạn đang trả lời các câu hỏi phân biệt {question}
     của bác sĩ. Bạn hãy trả lời câu hỏi đó đúng nhất với bệnh {disease_name} mà bạn đang mắc phải.
-    Ví dụ : Nếu câu hỏi là "Bạn có bị ngứa không?" và bạn đang mắc bệnh ngứa thì bạn hãy trả lời là "Có, tôi bị ngứa".
-    Nếu bạn không mắc bệnh đó thì bạn hãy trả lời là "Không, tôi không bị ngứa".
-    Trả lời của bạn phải ngắn gọn và súc tích, không cần giải thích thêm.
+    Ví dụ bạn đang bị đậu mùa. Khi bác sĩ hỏi bạn "Bạn có cảm thấy ngứa không?" thì bạn hãy trả lời là "Có" hoặc "Không" tùy theo triệu chứng của bạn.
+    Nếu bạn không biết câu trả lời, hãy trả lời là "Tôi không biết". Chỉ đưa ra câu trả lời của câu hỏi ngoài ra không cần giải thích gì thêm.
     """
     try:
         model = genai.GenerativeModel('gemini-2.0-flash')
@@ -479,6 +479,11 @@ def answer_question(question,disease_name):
     except Exception as e:
         print(f"Lỗi khi tạo mô tả với Gemini: {e}")
         return None
+    
+def clean_image_name(image_name):
+    name = os.path.splitext(image_name)[0]  
+    name = re.sub(r"\(\d+\)", "", name)    
+    return name.strip().lower()
 
 def test_process_pipeline():
     Image_dir = "app/static/data_test"
@@ -487,18 +492,19 @@ def test_process_pipeline():
     total_images = 0
 
     for image_path in get_all_images(Image_dir):
-        image_name = os.path.basename(image_path).replace("_", " ")
-        print(f"\n=== Processing {image_path} ===")
-        
-        result = process_pipeline(image_path, image_name)
-        
-        print(f"Dự đoán: {result}")
-        print(f"Thực tế: {image_name}")
+        image_name = os.path.basename(image_path)
+        image_name_cleaned = clean_image_name(image_name)
 
-        if result == image_name:
+        print(f"\n=== Processing {image_path} ===")
+        result = process_pipeline(image_path, image_name_cleaned)
+        print(f"Dự đoán: {result}")
+        print(f"Thực tế: {image_name_cleaned}")
+        if result and any(image_name_cleaned == label.lower() for label in result):
             right_result += 1
+            print(f"Đúng")
         else:
             wrong_result += 1
+            print(f"[!] Sai: Dự đoán {result} | Thực tế: {image_name_cleaned}")
 
         total_images += 1
         print("Done.\n")
@@ -506,7 +512,6 @@ def test_process_pipeline():
     print("\n=== TỔNG KẾT ===")
     print(f"Kết quả đúng : {right_result}, Tỉ lệ đúng: {right_result / total_images * 100:.2f}%")
     print(f"Kết quả sai  : {wrong_result}, Tỉ lệ sai : {wrong_result / total_images * 100:.2f}%")
-
     
 def process_pipeline(image_path,diease_name):
     final_labels=process_image(image_path)
@@ -542,14 +547,15 @@ def process_pipeline(image_path,diease_name):
     refined_labels = result.get("giu_lai", [])
     if not refined_labels:
         print("Không còn nhãn nào phù hợp. Đề xuất tham khảo bác sĩ.")
-    else:
-        print("Các nhãn còn lại sau loại trừ:")
-        for label_info in refined_labels:
-            label = label_info.get("label")
-            ket_qua = "-".join(label.split("-")[1:])
-            suitability = label_info.get("do_phu_hop")
-            print(f"- {ket_qua} (Mức độ phù hợp: {suitability})")
-    
+    label_names = []
+    for label_info in refined_labels:
+        label = label_info.get("label")
+        ket_qua = "-".join(label.split("-")[1:])  # Cắt phần ID nếu có
+        suitability = label_info.get("do_phu_hop")
+        print(f"- {ket_qua} (Mức độ phù hợp: {suitability})")
+        label_names.append(ket_qua)
+
+    return label_names    
 def mainclient():
     download_from_gcs()
     load_faiss_index()
