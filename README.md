@@ -36,6 +36,28 @@
 * **Gán nhãn cứng**: Chỉ dựa vào ảnh gần nhất, không có logic kiểm chứng sâu
 * **Độ chính xác phụ thuộc dữ liệu trong FAISS**
 * **Không cung cấp lý do rõ ràng cho quyết định** *(→ được cải thiện ở V2 với MMRAG)*
+Dưới đây là phần **nhược điểm của V1** kèm với **lý do cụ thể để nâng cấp lên V2**, bạn có thể tham khảo:
 
+---
 
+## Nhược điểm của V1
 
+1. **Không xử lý tốt ảnh không rõ nét hoặc quá khác biệt**
+
+   * V1 thiếu các bước tiền xử lý ảnh nâng cao như cân bằng sáng, làm mờ, phát hiện cạnh, nên dễ bị ảnh hưởng bởi chất lượng ảnh đầu vào kém, dẫn đến embedding không chính xác.
+
+2. **Chưa phát hiện được ảnh bất thường (anomaly/outlier)**
+
+   * V1 chỉ so sánh vector tổng thể của ảnh mà không tách riêng vùng bất thường, nên bỏ sót các dấu hiệu bệnh lý tinh vi hoặc không phát hiện được những trường hợp ảnh lạ, bất thường.
+
+3. **Gán nhãn cứng, chỉ dựa vào ảnh gần nhất, không có logic kiểm chứng sâu**
+
+   * V1 chỉ dựa vào ảnh tương tự nhất để gán nhãn, không kết hợp nhiều kết quả để đánh giá tần suất nhãn, thiếu cơ chế chọn nhãn chính xác hơn.
+
+4. **Độ chính xác phụ thuộc rất nhiều vào dữ liệu trong FAISS**
+
+   * Nếu dữ liệu trong FAISS chưa đầy đủ hoặc có nhiễu, việc tìm ảnh tương tự và gán nhãn dễ bị sai lệch.
+
+5. **Không cung cấp lý do rõ ràng cho quyết định chuẩn đoán**
+
+   * V1 không có bước giải thích hay xác nhận kết quả, gây khó khăn cho việc kiểm chứng và tin tưởng kết quả của hệ thống.
