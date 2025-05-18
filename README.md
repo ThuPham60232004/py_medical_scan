@@ -1,14 +1,14 @@
-## 📦 Version: `release/v1-testing`
+## ersion: `release/v1-testing`
 
-### 🧪 **V1 - Pipeline chẩn đoán da liễu bằng ảnh**
+###  **V1 - Pipeline chẩn đoán da liễu bằng ảnh**
 
 ---
 
-### ✅ **Quy trình xử lý (Pipeline)**
+### **Quy trình xử lý (Pipeline)**
 ![ProcessImage](app/static/image_readme/h1.png)
 ---
 
-### ⚙️ **Chi tiết từng bước**
+### **Chi tiết từng bước**
 
 | Bước                      | Mô tả                                                                          |
 | ------------------------- | ------------------------------------------------------------------------------ |
@@ -21,19 +21,21 @@
 
 ---
 
-### ✅ **Ưu điểm V1**
+### **Ưu điểm V1**
 
-**Triển khai nhanh**: Hệ thống đơn giản, chỉ cần embedding + FAISS
-**Không cần huấn luyện mô hình mới**: Dựa trên các vector đã có
-**Dễ mở rộng**: Có thể cập nhật thêm ảnh vào FAISS mà không retrain
-**Tốc độ xử lý nhanh**: Truy vấn ảnh gần nhất chỉ mất vài mili giây
+* **Triển khai nhanh**: Hệ thống đơn giản, chỉ cần embedding + FAISS
+* **Không cần huấn luyện mô hình mới**: Dựa trên các vector đã có
+* **Dễ mở rộng**: Có thể cập nhật thêm ảnh vào FAISS mà không retrain
+* **Tốc độ xử lý nhanh**: Truy vấn ảnh gần nhất chỉ mất vài mili giây
 ---
 
-### ⚠️ **Nhược điểm V1**
+### **Nhược điểm V1**
 
-**Không xử lý tốt ảnh không rõ nét hoặc quá khác biệt**
-**Chưa phát hiện ảnh bất thường (anomaly/outlier)**
-**Gán nhãn cứng**: Chỉ dựa vào ảnh gần nhất, không có logic kiểm chứng sâu
-**Độ chính xác phụ thuộc dữ liệu trong FAISS**
-**Không cung cấp lý do rõ ràng cho quyết định** *(→ được cải thiện ở V2 với MMRAG)*
+* **Không xử lý tốt ảnh không rõ nét hoặc quá khác biệt**
+* **Chưa phát hiện ảnh bất thường (anomaly/outlier)**
+* **Gán nhãn cứng**: Chỉ dựa vào ảnh gần nhất, không có logic kiểm chứng sâu
+* **Độ chính xác phụ thuộc dữ liệu trong FAISS**
+* **Không cung cấp lý do rõ ràng cho quyết định** *(→ được cải thiện ở V2 với MMRAG)*
+
+
 
