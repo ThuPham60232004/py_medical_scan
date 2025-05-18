@@ -11,11 +11,12 @@ import timm
 from PIL import Image
 from torchvision import transforms
 from dotenv import load_dotenv
+
 import logging
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 load_dotenv()
-
+import re
 # --- Cấu hình ---
 GCS_BUCKET = "kltn-2025"
 GCS_IMAGE_PATH = "uploaded_images/"
@@ -36,7 +37,6 @@ clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 vit_model = timm.create_model("vit_base_patch16_224", pretrained=True).to(device)
 vit_model.eval()
 
-# --- Biến toàn cục ---
 index = None
 labels = {}
 anomaly_index = None
@@ -50,7 +50,6 @@ def upload_to_gcs(local_path, destination_blob_name):
     blob.upload_from_filename(local_path)
     logging.info(f"Đã upload file lên GCS: gs://{GCS_BUCKET}/{destination_blob_name}")
 
-# --- Nhận ảnh từ user và lưu tạm thời lên GCS ---
 def save_image_from_user(image_bytes, filename):
     tmp_dir = Path("tmp")
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -72,21 +71,28 @@ def preprocess_image(image_path):
     return edges
 
 def generate_anomaly_map(image_path: str) -> np.ndarray:
-    img = Image.open(image_path).convert("RGB")
-    original_size = img.size  # (width, height)
+    img_pil = Image.open(image_path).convert("RGB")
+    original_size = img_pil.size 
+    img_np = np.array(img_pil)  
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
     ])
-    img_tensor = transform(img).unsqueeze(0).to(device)
-
+    img_tensor = transform(img_pil).unsqueeze(0).to(device)
     with torch.no_grad():
-        features = vit_model.forward_features(img_tensor)  
+        features = vit_model.forward_features(img_tensor)
     feature_map = features.mean(dim=1).squeeze().cpu().numpy()
     anomaly_map = (feature_map - np.min(feature_map)) / (np.ptp(feature_map) + 1e-6)
-    anomaly_map = (anomaly_map * 255).astype(np.uint8)
     anomaly_map_resized = cv2.resize(anomaly_map, original_size, interpolation=cv2.INTER_CUBIC)
-    return anomaly_map_resized
+    anomaly_map_uint8 = (anomaly_map_resized * 255).astype(np.uint8)
+    heatmap = cv2.applyColorMap(anomaly_map_uint8, cv2.COLORMAP_JET)
+    img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+    overlay = cv2.addWeighted(img_bgr, 0.6, heatmap, 0.4, 0)
+    _, binary_mask = cv2.threshold(anomaly_map_uint8, 180, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(overlay, contours, -1, (0, 0, 255), 2)
+
+    return overlay
 
 def embed_image(image_path):
     image = cv2.imread(image_path)
@@ -246,10 +252,6 @@ def get_all_images(directory):
     exts = [".jpg", ".jpeg", ".png", ".bmp"]
     return [p for p in Path(directory).rglob("*") if p.is_file() and p.suffix.lower() in exts]
 def clean_predicted_label(label: str) -> str:
-    """
-    Xóa tiền tố đầu tiên phân tách bằng dấu '-' và chuẩn hóa chữ thường.
-    Ví dụ: 'ba-ai-impetigo' -> 'ai-impetigo'
-    """
     if not label:
         return ""
     parts = label.strip().split("-")
@@ -257,6 +259,8 @@ def clean_predicted_label(label: str) -> str:
         return "-".join(parts[1:]).lower()
     return label.lower()
 
+def clean_actual_label(label: str) -> str:
+    return re.sub(r"\(\d+\)", "", label).strip().lower()
 def test_process_pipeline():
     image_dir = "app/static/data_test"
     right_result = 0
@@ -268,12 +272,14 @@ def test_process_pipeline():
 
         print(f"\n=== Processing: {image_path} ===")
         result = process_pipeline(image_path)
-        clean_result = clean_predicted_label(result)
 
-        print(f"Dự đoán: {clean_result}")
-        print(f"Thực tế: {image_name}")
+        predicted_label = clean_predicted_label(result)
+        actual_label = clean_actual_label(image_name)
 
-        if clean_result and clean_result in image_name:
+        print(f"Dự đoán: {predicted_label}")
+        print(f"Thực tế: {actual_label}")
+
+        if predicted_label.strip() == actual_label.strip():
             print("Kết quả: ĐÚNG")
             right_result += 1
         else:
@@ -287,7 +293,8 @@ def test_process_pipeline():
 
     print("\n================== TỔNG KẾT ==================")
     print(f"Kết quả đúng : {right_result}, Tỉ lệ đúng là: {right_result / total_images * 100:.2f}%")
-    print(f"Kết quả sai  : {wrong_result}, Tỉ lệ sai là: {wrong_result / total_images * 100:.2f}%")
+    print(f"Kết quả sai  : {wrong_result}, Tỉ lệ sai là: {wrong_result / total_images * 100:.2f}%")    
+
 
 def main():
     load_faiss_index()
