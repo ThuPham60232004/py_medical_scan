@@ -1,104 +1,131 @@
-# Hệ Thống Chẩn Đoán Bệnh Về Da
+## Version: `release/v4-testing`
 
-Hệ thống AI hỗ trợ chẩn đoán bệnh về da thông qua hình ảnh và mô tả triệu chứng
+###  **V4 - Pipeline chẩn đoán da liễu bằng ảnh**
 
-## Tính Năng
+---
 
-- 🖼️ **Phân tích hình ảnh da liễu**: Xử lý và phân tích hình ảnh vùng da tổn thương để nhận diện các dấu hiệu bệnh lý.
-- 📝 **Kết hợp mô tả triệu chứng**: Hỗ trợ người dùng nhập mô tả triệu chứng để nâng cao độ chính xác của chẩn đoán.
-- 🧩 **Kiến trúc mở rộng**: Sử dụng Clean Architecture để tách biệt rõ ràng các tầng và luồng xử lý.
-- 🚀 **Tối ưu AI Pipeline**: Tích hợp các mô hình AI tiên tiến như ViT, CLIP, MM-RAG để phân tích và đưa ra chẩn đoán chính xác.
-- 🧬 **Tìm kiếm và tham chiếu y khoa**: Kết nối cơ sở dữ liệu y khoa để xác thực và tham chiếu các bệnh lý có liên quan.
+### **Quy trình xử lý (Pipeline)**
+![ProcessImage](app/static/image_readme/h4.png)
+---
 
-## Ứng Dụng
+### **Chi tiết từng bước**
 
-- Hỗ trợ bác sĩ trong việc chẩn đoán sơ bộ các bệnh da.
-- Cung cấp hệ thống tự động cho các ứng dụng y tế cá nhân.
-- Nền tảng nghiên cứu và phát triển AI trong y tế.
+| Bước                                         | Mô tả                                                                                                                                                                                                                                                 |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1. Nhận ảnh từ người dùng**                | Người dùng chọn ảnh da liễu qua giao diện web hoặc API. Ảnh được lưu tạm thời lên Google Cloud Storage (GCS).                                                                                                                                         |
+| **2. Tiền xử lý ảnh**                        | Thực hiện cân bằng sáng, làm mờ, phát hiện cạnh hoặc các bước tiền xử lý khác để chuẩn hóa ảnh trước khi đưa vào mô hình.                                                                                                                             |
+| **3. Tạo Anomaly Map**                       | Sử dụng mô hình ViT (Vision Transformer) để phát hiện vùng bất thường trên ảnh da liễu. Xuất ra bản đồ bất thường (anomaly map) dưới dạng ảnh nhiệt thể hiện vùng bệnh lý.                                                                            |
+| **4. Nhúng ảnh và anomaly map thành vector** | Dùng CLIP để chuyển ảnh gốc và anomaly map thành các vector đặc trưng (embedding). Vector này có ý nghĩa phong phú, giúp tìm kiếm ảnh tương tự chính xác hơn.                                                                                         |
+| **5. Tải FAISS index và nhãn tương ứng**     | Tải ba loại FAISS index: `faiss_normal.index` (vector ảnh gốc bình thường), `faiss_anomaly.index` (vector anomaly map), `faiss_text.index` (embedding văn bản mô tả bệnh, tùy chọn). Tải nhãn tương ứng từ file `labels.npy` và `labels_anomaly.npy`. |
+| **6. Tìm kiếm ảnh tương tự bằng FAISS**      | Tìm kiếm các ảnh gần nhất trên FAISS index của ảnh gốc và anomaly map, trả về nhãn bệnh tương ứng với các ảnh tìm được.                                                                                                                               |
+| **7. Gộp và phân tích nhãn bệnh**            | Trích xuất nhãn bệnh từ kết quả tìm kiếm ảnh gốc và anomaly map. Thống kê tần suất xuất hiện của từng nhãn, chọn nhãn xuất hiện nhiều nhất làm kết quả sơ bộ.                                                                                         |
+| **8. Sinh mô tả tự động từ ảnh (Gemini)**    | Dùng Gemini để tạo mô tả tự động dựa trên ảnh da liễu, hỗ trợ bổ sung thông tin chuẩn hóa mô tả bệnh.                                                                                                                                                 |
+| **9. Thu thập mô tả bổ sung từ người dùng**  | Hiển thị bộ câu hỏi gợi ý dựa trên mô tả tự động, giúp người dùng trả lời bổ sung thông tin mô tả bệnh lý cụ thể hơn.                                                                                                                                 |
+| **10. Chuẩn hóa mô tả và phân tích**         | Kết hợp mô tả người dùng và mô tả Gemini, chuẩn hóa thành tập đặc trưng mô tả bệnh.                                                                                                                                                                   |
+| **11. Phân biệt nhãn dựa trên mô tả và LLM** | Dùng mô hình LLM để so sánh các nhãn bệnh, phân tích điểm khác nhau dựa trên mô tả tổng hợp, rồi dùng Gemini tạo ra các câu hỏi phân biệt cụ thể cho người dùng trả lời nhằm cải thiện độ chính xác chẩn đoán.                                        |
+| **12. Loại trừ nhãn không phù hợp**          | Dựa trên câu trả lời của người dùng và mô tả chuẩn hóa, lọc bỏ các nhãn không phù hợp, giữ lại các nhãn bệnh có mức độ phù hợp cao.                                                                                                                   |
+| **13. Truy xuất dữ liệu y khoa**             | Layer 1: Tìm dữ liệu trong bộ data\_collection có sẵn (dữ liệu cục bộ).<br>Layer 2: Tìm kiếm dữ liệu tham khảo y khoa rộng hơn (Medline, PubMed).                                                                                                     |
+| **14. Trả kết quả cuối cùng**                | Trả về nhãn bệnh cuối cùng và mô tả chi tiết cho người dùng, bao gồm hình ảnh, các dấu hiệu bệnh, và gợi ý điều trị hoặc khuyến cáo tham khảo bác sĩ chuyên khoa.                                                                                     |
 
-## Công Nghệ Sử Dụng
+---
 
-- **Ngôn ngữ lập trình**: Python, FastAPI
-- **Kiến trúc**: Clean Architecture / Hexagonal Architecture
-- **Lưu trữ và Xử lý Dữ liệu**: Google Cloud Storage, FAISS Vector Search, MongoDB
-- **Mô hình AI**: ViT, CLIP, MM-RAG, BLIP-2
-- **Công cụ**: FastAPI, PyTorch, Transformers, FAISS, Google Cloud Storage
+## **Ưu điểm của V2**
 
-## Kiến Trúc Hệ Thống
+1. **Tiền xử lý ảnh tốt hơn**
 
-```
-[User] 
-   │
-   ▼
-[API Layer: FastAPI]  
-   │
-   ▼
-[Application Layer: Use Cases]
-   │
-   ├── [Domain Layer: Entities / Models]
-   │
-   └── [Infrastructure Layer: AI Services, Database, Storage]
-```
+   * Cân bằng sáng, làm mờ, phát hiện cạnh giúp làm nổi bật đặc trưng ảnh, giảm nhiễu, xử lý tốt ảnh đầu vào chất lượng kém.
 
-## Cấu Trúc Thư Mục
-![Kiến trúc hệ thống](assets/contructor.png)
+2. **Phát hiện vùng bất thường (Anomaly Map)**
 
-## Mô Tả Các Thành Phần Chính Trong Kiến Trúc
+   * Sử dụng Vision Transformer (ViT) để phát hiện chính xác các vùng nghi ngờ, thay vì chỉ xét toàn ảnh như V1.
 
-1. **Domain Layer**  
-   Tầng này chứa các **Entity** và **Value Object** mô tả các khái niệm cốt lõi của hệ thống như "Bệnh da", "Hình ảnh da", và "Chẩn đoán". Đây là nơi định nghĩa các luật và quy tắc liên quan đến xử lý bệnh.
+3. **Kết hợp nhiều nguồn thông tin trong embedding**
 
-   - Ví dụ: Định nghĩa các Entity cho "Bệnh da", "Hình ảnh da", "Kết quả chẩn đoán", và các giá trị liên quan.
+   * Dùng CLIP để nhúng cả ảnh gốc và anomaly map → vector biểu diễn đa chiều, nắm bắt thông tin sâu hơn.
 
-2. **Application Layer (Use Case)**  
-   Tầng này chứa các **Use Case** hoặc luồng xử lý chính của hệ thống, nơi các yêu cầu từ người dùng được xử lý. Ví dụ, khi người dùng tải lên một hình ảnh, hệ thống sẽ xử lý ảnh, phân tích và đưa ra kết quả chẩn đoán.
+4. **Tìm kiếm tương đồng qua nhiều FAISS index**
 
-   - Ví dụ: `diagnose_skin_disease_use_case.py` sẽ thực hiện các bước từ tiền xử lý ảnh, phân tích bằng mô hình AI cho đến việc trả về kết quả.
+   * Kết hợp cả ảnh thường và anomaly → tăng khả năng nhận diện bệnh trong nhiều trường hợp phức tạp.
 
-3. **Infrastructure Layer (Kết nối với các dịch vụ ngoài)**  
-   Tầng này kết nối với các công cụ, thư viện bên ngoài như **AI Models**, **Database**, và **Cloud Storage**. Các phần này không chứa logic nghiệp vụ, mà chỉ là các lớp phụ trợ cho hệ thống.
+5. **Gán nhãn mềm bằng thống kê tần suất**
 
-   - Ví dụ:
-     - Lưu ảnh lên **Google Cloud Storage**.
-     - Gọi các mô hình AI như **ViT**, **CLIP**, **MM-RAG**.
-     - Kết nối **MongoDB** để lưu trữ thông tin bệnh lý.
+   * Thay vì lấy ảnh gần nhất (như V1), V2 phân tích nhiều kết quả và chọn nhãn có tần suất cao nhất → giảm sai lệch.
 
-4. **Interface Layer (API / CLI)**  
-   Đây là tầng giao tiếp giữa người dùng và hệ thống. API được xây dựng bằng **FastAPI**, cho phép người dùng tải lên ảnh và nhận kết quả chẩn đoán. Cũng có thể mở rộng giao diện này để sử dụng qua CLI hoặc Web.
+6. **Tăng tính minh bạch**
 
-   - Ví dụ: API **FastAPI** sẽ nhận ảnh từ người dùng và trả kết quả chẩn đoán.
+   * Có thể hiển thị anomaly map để giải thích kết quả chẩn đoán cho người dùng hoặc bác sĩ kiểm chứng.
 
-## Hướng Dẫn Sử Dụng
+---
+Dưới đây là phân tích **ưu điểm, khuyết điểm của V4**, **lý do nâng cấp từ V3 lên V4**, và đánh giá **có nên nâng cấp hay không**.
 
-1. **Clone repository** về máy:
-   ```bash
-   git clone https://github.com/ThuPham60232004/py_mediSys.git
-   ```
+---
 
-2. **Cài đặt các thư viện cần thiết**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+## So sánh V3 và V4
 
-3. **Thêm ảnh da liễu vào thư mục `input/`**.
+### V3 (Phiên bản trước)
 
-4. **Khởi chạy server**:
-   ```bash
-   uvicorn app.interfaces.api.main:app --reload
-   ```
+* Quy trình: Nhận ảnh → Tiền xử lý → Tạo anomaly map (ViT) → Nhúng vector (CLIP) → Tải FAISS index → Tìm kiếm ảnh tương tự → Ghép nhãn → Chọn nhãn phổ biến nhất → Dùng Gemini sinh mô tả → Thu thập mô tả người dùng → Chuẩn hóa mô tả → Dùng LLM tìm điểm khác biệt → Gemini đưa ra câu hỏi phân biệt → Gemini đưa ra nhãn cuối.
+* Chỉ tập trung xử lý và trả kết quả dựa trên dữ liệu nội bộ, không mở rộng truy xuất thêm thông tin từ bên ngoài.
 
-5. **Gửi yêu cầu dự đoán qua API** hoặc giao diện.
+### V4 (Phiên bản nâng cấp)
 
-   - Gửi yêu cầu **POST** tới API `/upload_image/` với hình ảnh da.
-   - Nhận kết quả chẩn đoán, giải thích chi tiết về bệnh da.
+* Quy trình tương tự V3, nhưng có thêm:
 
-## Đóng Góp
+  * **Layer 1:** Truy xuất dữ liệu trong bộ data\_collection nội bộ.
+  * **Layer 2:** Mở rộng tìm kiếm và truy xuất dữ liệu y khoa chuyên sâu trên các nguồn uy tín bên ngoài như Medline.
+* Kết quả trả về không chỉ là nhãn bệnh mà còn bao gồm **mô tả chi tiết, thông tin tham khảo bổ sung** từ các nguồn y khoa đáng tin cậy.
 
-Chúng tôi luôn hoan nghênh đóng góp từ cộng đồng! Nếu bạn muốn tham gia xây dựng và cải tiến hệ thống này, vui lòng mở **issue** hoặc **pull request**.
+---
 
-Các bước đóng góp:
+## Ưu điểm V4 so với V3
 
-1. Fork repository về tài khoản của bạn.
-2. Tạo nhánh mới cho tính năng hoặc sửa lỗi.
-3. Tạo pull request với mô tả chi tiết về thay đổi.
-4. Chờ sự xem xét và phản hồi từ nhóm phát triển.
+1. **Tăng độ tin cậy và chính xác cho chẩn đoán**
+
+   * Mở rộng phạm vi dữ liệu tham khảo ra ngoài bộ data\_collection cục bộ, giúp bổ sung kiến thức mới, cập nhật hơn, đặc biệt hữu ích với bệnh lý phức tạp hoặc hiếm gặp.
+
+2. **Cung cấp kết quả chi tiết, đầy đủ hơn**
+
+   * Người dùng không chỉ nhận nhãn bệnh mà còn nhận thêm mô tả chi tiết, giải thích, hướng điều trị từ các tài liệu y khoa chuẩn (Medline), giúp tăng tính minh bạch và tin tưởng.
+
+3. **Hỗ trợ chuyên sâu cho bác sĩ và người dùng**
+
+   * Giúp bác sĩ tham khảo thêm thông tin từ nguồn dữ liệu khoa học chuẩn, từ đó đưa ra quyết định điều trị chính xác hơn.
+
+4. **Khả năng mở rộng, cập nhật dữ liệu dễ dàng**
+
+   * Cơ chế Layer 2 có thể cập nhật liên tục nguồn dữ liệu bên ngoài mà không cần thay đổi quá nhiều kiến trúc backend.
+
+---
+
+## Khuyết điểm V4 so với V3
+
+1. **Tăng độ phức tạp và thời gian xử lý**
+
+   * Thêm bước truy xuất dữ liệu từ nguồn bên ngoài (Medline) có thể làm tăng độ trễ trong phản hồi kết quả, đòi hỏi hệ thống mạnh, đường truyền ổn định.
+
+2. **Phụ thuộc vào nguồn dữ liệu bên ngoài**
+
+   * Nếu nguồn dữ liệu bên ngoài gặp sự cố, hoặc API thay đổi, có thể ảnh hưởng đến hiệu suất và độ ổn định của hệ thống.
+
+3. **Chi phí vận hành có thể tăng**
+
+   * Việc truy cập các tài nguyên y khoa chuyên sâu có thể yêu cầu đăng ký, bản quyền hoặc tài nguyên tính phí, làm tăng chi phí vận hành.
+
+---
+
+## Lý do nâng cấp từ V3 lên V4
+
+* **Nhu cầu tăng tính chính xác và độ tin cậy** trong chẩn đoán, đặc biệt với các bệnh da liễu có biểu hiện phức tạp hoặc dễ nhầm lẫn.
+* **Tăng trải nghiệm người dùng** và chuyên gia y tế bằng việc cung cấp thêm thông tin tham khảo, giúp hiểu rõ bệnh hơn, hỗ trợ quyết định điều trị.
+* **Mở rộng khả năng cập nhật kiến thức y khoa**, giảm phụ thuộc hoàn toàn vào dữ liệu nội bộ đã có (có thể lỗi thời, hạn chế).
+
+---
+
+## Có cần thiết nâng cấp không?
+
+* **Nếu mục tiêu hệ thống là hỗ trợ y tế chính xác, chuyên sâu** và phục vụ cả người dùng cuối lẫn chuyên gia, thì nâng cấp lên V4 là rất cần thiết.
+* Đặc biệt với các môi trường y tế chuyên nghiệp, việc truy cập dữ liệu y khoa chuẩn uy tín giúp tăng độ tin cậy và được tin tưởng hơn.
+* Tuy nhiên, nếu mục tiêu là hệ thống đơn giản, tốc độ nhanh, chi phí thấp, phục vụ cho mục đích sơ bộ thì V3 cũng có thể đủ dùng.
+
+---
+
