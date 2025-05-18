@@ -3,122 +3,253 @@ import cv2
 import numpy as np
 import torch
 import faiss
-from PIL import Image
 from pathlib import Path
 from collections import Counter
 from google.cloud import storage
 from transformers import CLIPProcessor, CLIPModel
+import timm
+from PIL import Image
+from torchvision import transforms
 from dotenv import load_dotenv
+import logging
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 load_dotenv()
 
+# --- Cấu hình ---
 GCS_BUCKET = "kltn-2025"
 GCS_IMAGE_PATH = "uploaded_images/"
-GCS_KEY_PATH = "app/gsc-key.json"
+GCS_KEY_PATH = "app/gsc-key.json"  # Đường dẫn file key json
 
 LOCAL_INDEX_PATH = "app/static/faiss/faiss_index.bin"
 LOCAL_LABELS_PATH = "app/static/labels/labels.npy"
-INDEX_DIM = 512  
+LOCAL_ANOMALY_INDEX_PATH = "app/static/faiss/faiss_index_anomaly.bin"
+LOCAL_ANOMALY_LABELS_PATH = "app/static/labels/labels_anomaly.npy"
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
-processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+# --- Load model ---
+logging.info(f"Khởi tạo model trên device: {device}")
+clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
+clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
+vit_model = timm.create_model("vit_base_patch16_224", pretrained=True).to(device)
+vit_model.eval()
+
+# --- Biến toàn cục ---
 index = None
 labels = {}
+anomaly_index = None
+anomaly_labels = {}
 
+# --- Hàm upload ảnh lên GCS ---
 def upload_to_gcs(local_path, destination_blob_name):
     client = storage.Client.from_service_account_json(GCS_KEY_PATH)
     bucket = client.bucket(GCS_BUCKET)
     blob = bucket.blob(destination_blob_name)
     blob.upload_from_filename(local_path)
-    print(f"Uploaded: gs://{GCS_BUCKET}/{destination_blob_name}")
+    logging.info(f"Đã upload file lên GCS: gs://{GCS_BUCKET}/{destination_blob_name}")
+
+# --- Nhận ảnh từ user và lưu tạm thời lên GCS ---
+def save_image_from_user(image_bytes, filename):
+    tmp_dir = Path("tmp")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / filename
+    with open(tmp_path, "wb") as f:
+        f.write(image_bytes)
+    logging.info(f"Lưu ảnh tạm thời thành công: {tmp_path}")
+    upload_to_gcs(str(tmp_path), GCS_IMAGE_PATH + filename)
+    return str(tmp_path)
 
 def preprocess_image(image_path):
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
+        logging.warning("Ảnh đầu vào không hợp lệ, không thể tiền xử lý.")
         return None
     blurred = cv2.GaussianBlur(img, (5, 5), 0)
     equalized = cv2.equalizeHist(blurred)
     edges = cv2.Canny(equalized, 50, 150)
     return edges
 
+def generate_anomaly_map(image_path: str) -> np.ndarray:
+    img = Image.open(image_path).convert("RGB")
+    original_size = img.size  # (width, height)
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+    ])
+    img_tensor = transform(img).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        features = vit_model.forward_features(img_tensor)  
+    feature_map = features.mean(dim=1).squeeze().cpu().numpy()
+    anomaly_map = (feature_map - np.min(feature_map)) / (np.ptp(feature_map) + 1e-6)
+    anomaly_map = (anomaly_map * 255).astype(np.uint8)
+    anomaly_map_resized = cv2.resize(anomaly_map, original_size, interpolation=cv2.INTER_CUBIC)
+    return anomaly_map_resized
+
 def embed_image(image_path):
     image = cv2.imread(image_path)
     if image is None:
+        logging.warning(f"Không thể đọc ảnh để nhúng: {image_path}")
         return None
-    inputs = processor(images=image, return_tensors="pt").to(device)
+    inputs = clip_processor(images=image, return_tensors="pt").to(device)
     with torch.no_grad():
-        embedding = model.get_image_features(**inputs)
+        embedding = clip_model.get_image_features(**inputs)
+    return embedding.cpu().numpy().astype(np.float32)
+
+def embed_anomaly_map(anomaly_map_path: str):
+    anomaly_map = cv2.imread(anomaly_map_path, cv2.IMREAD_GRAYSCALE)
+    if anomaly_map is None:
+        logging.warning(f"Không thể đọc anomaly map để nhúng: {anomaly_map_path}")
+        return None
+    anomaly_map_rgb = cv2.cvtColor(anomaly_map, cv2.COLOR_GRAY2RGB)
+    inputs = clip_processor(images=anomaly_map_rgb, return_tensors="pt").to(device)
+    with torch.no_grad():
+        embedding = clip_model.get_image_features(**inputs)
     return embedding.cpu().numpy().astype(np.float32)
 
 def load_faiss_index():
-    global index, labels
+    global index, labels, anomaly_index, anomaly_labels
+
     if os.path.exists(LOCAL_INDEX_PATH):
-        index = faiss.read_index(LOCAL_INDEX_PATH)
-        print(f"FAISS index loaded: {index.ntotal} vectors.")
+        try:
+            index = faiss.read_index(LOCAL_INDEX_PATH)
+            logging.info(f"Đã tải FAISS index thường, tổng số vector: {index.ntotal}")
+        except Exception as e:
+            logging.error(f"Lỗi tải FAISS index thường: {e}")
+            index = None
     else:
-        print("FAISS index not found!")
+        logging.warning("Không tìm thấy FAISS index thường!")
 
     if os.path.exists(LOCAL_LABELS_PATH):
         labels = np.load(LOCAL_LABELS_PATH, allow_pickle=True).item()
-        print(f"Labels loaded: {len(labels)}")
+        logging.info(f"Đã tải labels thường, số lượng: {len(labels)}")
     else:
-        print("Labels file not found!")
+        logging.warning("Không tìm thấy file labels thường!")
+
+    if os.path.exists(LOCAL_ANOMALY_INDEX_PATH):
+        try:
+            anomaly_index = faiss.read_index(LOCAL_ANOMALY_INDEX_PATH)
+            logging.info(f"Đã tải FAISS anomaly index, tổng số vector: {anomaly_index.ntotal}")
+        except Exception as e:
+            logging.error(f"Lỗi tải FAISS anomaly index: {e}")
+            anomaly_index = None
+    else:
+        logging.warning("Không tìm thấy FAISS anomaly index!")
+
+    if os.path.exists(LOCAL_ANOMALY_LABELS_PATH):
+        anomaly_labels = np.load(LOCAL_ANOMALY_LABELS_PATH, allow_pickle=True).item()
+        logging.info(f"Đã tải anomaly labels, số lượng: {len(anomaly_labels)}")
+    else:
+        logging.warning("Không tìm thấy anomaly labels!")
 
 def search_similar_images(query_vector, top_k=5):
     if index is None or index.ntotal == 0:
-        print("FAISS index is empty.")
+        logging.warning("FAISS index thường trống hoặc chưa được tải!")
         return []
-
     distances, indices = index.search(query_vector, top_k)
+    logging.info(f"Chỉ số tìm được trong FAISS thường: {indices}")
+
     results = []
-    for i in indices[0]:
-        if 0 <= i < len(labels):
-            label_filename = list(labels.keys())[i]
-            results.append(labels[label_filename])
+    label_keys = list(labels.keys())
+    for idx in indices[0]:
+        idx = int(idx)
+        if 0 <= idx < len(label_keys):
+            key = label_keys[idx]
+            results.append(labels.get(key, "unknown"))
         else:
             results.append("unknown")
     return results
 
-def decide_final_label(result_labels):
-    if not result_labels:
+def search_anomaly_images(query_vector, top_k=5):
+    if anomaly_index is None or anomaly_index.ntotal == 0:
+        logging.warning("FAISS anomaly index trống hoặc chưa được tải!")
+        return []
+    distances, indices = anomaly_index.search(query_vector, top_k)
+    logging.info(f"Chỉ số tìm được trong FAISS anomaly: {indices}")
+
+    results = []
+    label_keys = list(anomaly_labels.keys())
+    for idx in indices[0]:
+        idx = int(idx)
+        if 0 <= idx < len(label_keys):
+            key = label_keys[idx]
+            results.append(anomaly_labels.get(key, "unknown"))
+        else:
+            results.append("unknown")
+    return results
+
+def combine_labels(normal_labels: list, anomaly_labels: list) -> str:
+    all_labels = normal_labels + anomaly_labels
+    all_labels = [label.strip() for label in all_labels if label and label != "unknown"]
+    return " ".join(all_labels).strip()
+
+def decide_final_label(labels_list):
+    if not labels_list:
         return "Không xác định"
-    label_counts = Counter(result_labels)
-    final_label, _ = label_counts.most_common(1)[0]
+    count = Counter(labels_list)
+    final_label = count.most_common(1)[0][0]
     return final_label
+def process_pipeline(image_path: str):
+    logging.info(f"Bắt đầu xử lý pipeline cho ảnh: {image_path}")
 
-def process_pipeline(image_path):
-    upload_to_gcs(image_path, GCS_IMAGE_PATH + Path(image_path).name)
+    processed_edges = preprocess_image(image_path)
+    processed_dir = Path("app/static/processed")
+    processed_dir.mkdir(parents=True, exist_ok=True)
 
-    processed = preprocess_image(image_path)
-    if processed is not None:
-        processed_path = f"app/static/processed/{Path(image_path).stem}_processed.jpg"
-        os.makedirs(os.path.dirname(processed_path), exist_ok=True)
-        cv2.imwrite(processed_path, processed)
-        upload_to_gcs(processed_path, GCS_IMAGE_PATH + Path(processed_path).name)
+    if processed_edges is not None:
+        processed_path = processed_dir / f"{Path(image_path).stem}_processed.jpg"
+        cv2.imwrite(str(processed_path), processed_edges)
+        upload_to_gcs(str(processed_path), GCS_IMAGE_PATH + processed_path.name)
+        logging.info(f"Ảnh tiền xử lý đã lưu và upload: {processed_path}")
+    else:
+        logging.warning("Không tạo được ảnh tiền xử lý.")
+
+    anomaly_map = generate_anomaly_map(image_path)
+    if anomaly_map is not None:
+        anomaly_map_path = processed_dir / f"{Path(image_path).stem}_anomaly_map.jpg"
+        cv2.imwrite(str(anomaly_map_path), anomaly_map)
+        logging.info(f"Anomaly map đã lưu: {anomaly_map_path}")
+    else:
+        logging.warning("Không tạo được anomaly map.")
+        anomaly_map_path = None
 
     embedding = embed_image(image_path)
-    if embedding is None:
-        print("Không thể nhúng ảnh.")
-        return
+    normal_labels = []
+    if embedding is not None:
+        normal_labels = search_similar_images(embedding)
+        logging.info(f"Nhãn tìm được từ ảnh gốc: {normal_labels}")
+    else:
+        logging.warning("Không tạo được embedding ảnh gốc.")
 
-    result_labels = search_similar_images(embedding)
-    print("Kết quả gán nhãn:")
-    for idx, label in enumerate(result_labels, 1):
-        print(f"{idx}. {label}")
+    anomaly_labels_list = []
+    if anomaly_map_path is not None:
+        anomaly_embedding = embed_anomaly_map(str(anomaly_map_path))
+        if anomaly_embedding is not None:
+            anomaly_labels_list = search_anomaly_images(anomaly_embedding)
+            logging.info(f"Nhãn tìm được từ anomaly map: {anomaly_labels_list}")
+        else:
+            logging.warning("Không tạo được embedding anomaly map.")
+    else:
+        logging.warning("Không có anomaly map để embedding.")
 
-    final_label = decide_final_label(result_labels)
-    print(f"\nNhãn cuối cùng được chọn: {final_label}")
+    combined_label_str = combine_labels(normal_labels, anomaly_labels_list)
+    logging.info(f"Nhãn tổng hợp: {combined_label_str}")
+
+    final_label = decide_final_label(normal_labels + anomaly_labels_list)
+    logging.info(f"Nhãn cuối cùng được chọn: {final_label}")
+
+    return final_label
 
 def main():
     image_path = "app/static/img_test/cellulitis.webp"
     if not os.path.exists(image_path):
-        print("Ảnh không tồn tại.")
+        logging.error("Ảnh đầu vào không tồn tại.")
         return
     load_faiss_index()
-    process_pipeline(image_path)
+    label = process_pipeline(image_path)
+    logging.info(f"Kết quả cuối cùng cho ảnh {image_path}: {label}")
 
 if __name__ == "__main__":
     main()
