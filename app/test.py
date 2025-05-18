@@ -30,9 +30,8 @@ index = None
 labels = {}
 
 def get_all_images(directory):
-    return list(Path(directory).rglob("*"))
-
-
+    exts = [".jpg", ".jpeg", ".png", ".bmp"]
+    return [p for p in Path(directory).rglob("*") if p.is_file() and p.suffix.lower() in exts]
 
 def upload_to_gcs(local_path, destination_blob_name):
     client = storage.Client.from_service_account_json(GCS_KEY_PATH)
@@ -108,7 +107,7 @@ def process_pipeline(image_path):
     embedding = embed_image(image_path)
     if embedding is None:
         print("Không thể nhúng ảnh.")
-        return
+        return None
 
     result_labels = search_similar_images(embedding)
     print("Kết quả gán nhãn:")
@@ -117,39 +116,33 @@ def process_pipeline(image_path):
 
     final_label = decide_final_label(result_labels)
     print(f"\nNhãn cuối cùng được chọn: {final_label}")
-
+    return final_label
 
 def test_process_pipeline():
-    Image_dir = "app/static/data_test"
-    get_all_images(Image_dir)
-    right_result=0
-    wrong_result=0
-    total_images=0
-    # duyệt qua từng ảnh trong thư mục
-    for image_path in get_all_images(Image_dir):
-        #Lấy tên ảnh bằng cách lấy tên file và thay thế các dấu _ bằng khoảng trắng
-        image_name = os.path.basename(image_path).replace("_", " ")
+    image_dir = "app/static/data_test"
+    right_result = 0
+    wrong_result = 0
+    total_images = 0
+
+    for image_path in get_all_images(image_dir):
+        image_name = os.path.basename(image_path).split(".")[0].replace("_", " ").lower()
 
         print(f"Processing {image_path}...")
-        result=process_pipeline(image_path)
+        result = process_pipeline(image_path)
         print("Done.\n")
-        # Kiểm tra kết quả
-        if result == image_name:
-            right_result+=1
-        else:
-            wrong_result+=1
-        total_images+=1
-    print(f"Kết quả đúng : {right_result},Tỉ lệ đúng là: {right_result/total_images*100}%")
-    print(f"Kết quả sai : {wrong_result},Tỉ lệ sai là: {wrong_result/total_images*100}%")
 
+        if result and result.lower() in image_name:
+            right_result += 1
+        else:
+            wrong_result += 1
+        total_images += 1
+
+    print(f"Kết quả đúng : {right_result}, Tỉ lệ đúng là: {right_result/total_images*100:.2f}%")
+    print(f"Kết quả sai : {wrong_result}, Tỉ lệ sai là: {wrong_result/total_images*100:.2f}%")
 
 def main():
-    image_path = "app/static/img_test/cellulitis.webp"
-    if not os.path.exists(image_path):
-        print("Ảnh không tồn tại.")
-        return
     load_faiss_index()
-    process_pipeline(image_path)
+    test_process_pipeline()
 
 if __name__ == "__main__":
     main()
