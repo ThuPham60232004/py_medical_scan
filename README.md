@@ -1,4 +1,4 @@
-## ersion: `release/v1-testing`
+## Version: `release/v1-testing`
 
 ###  **V1 - Pipeline chẩn đoán da liễu bằng ảnh**
 
