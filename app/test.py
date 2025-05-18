@@ -243,40 +243,54 @@ def process_pipeline(image_path: str):
     return final_label
 
 def get_all_images(directory):
-    return list(Path(directory).rglob("*"))
-
+    exts = [".jpg", ".jpeg", ".png", ".bmp"]
+    return [p for p in Path(directory).rglob("*") if p.is_file() and p.suffix.lower() in exts]
+def clean_predicted_label(label: str) -> str:
+    """
+    Xóa tiền tố đầu tiên phân tách bằng dấu '-' và chuẩn hóa chữ thường.
+    Ví dụ: 'ba-ai-impetigo' -> 'ai-impetigo'
+    """
+    if not label:
+        return ""
+    parts = label.strip().split("-")
+    if len(parts) > 1:
+        return "-".join(parts[1:]).lower()
+    return label.lower()
 
 def test_process_pipeline():
-    Image_dir = "app/static/data_test"
-    get_all_images(Image_dir)
-    right_result=0
-    wrong_result=0
-    total_images=0
-    # duyệt qua từng ảnh trong thư mục
-    for image_path in get_all_images(Image_dir):
-        #Lấy tên ảnh bằng cách lấy tên file và thay thế các dấu _ bằng khoảng trắng
-        image_name = os.path.basename(image_path).replace("_", " ")
+    image_dir = "app/static/data_test"
+    right_result = 0
+    wrong_result = 0
+    total_images = 0
 
-        print(f"Processing {image_path}...")
-        result=process_pipeline(image_path)
-        print("Done.\n")
-        # Kiểm tra kết quả
-        if result == image_name:
-            right_result+=1
+    for image_path in get_all_images(image_dir):
+        image_name = os.path.basename(image_path).split(".")[0].replace("_", " ").lower()
+
+        print(f"\n=== Processing: {image_path} ===")
+        result = process_pipeline(image_path)
+        clean_result = clean_predicted_label(result)
+
+        print(f"Dự đoán: {clean_result}")
+        print(f"Thực tế: {image_name}")
+
+        if clean_result and clean_result in image_name:
+            print("Kết quả: ĐÚNG")
+            right_result += 1
         else:
-            wrong_result+=1
-        total_images+=1
-    print(f"Kết quả đúng : {right_result},Tỉ lệ đúng là: {right_result/total_images*100}%")
-    print(f"Kết quả sai : {wrong_result},Tỉ lệ sai là: {wrong_result/total_images*100}%")
+            print("Kết quả: SAI")
+            wrong_result += 1
+        total_images += 1
+
+    if total_images == 0:
+        print("Không tìm thấy ảnh nào trong thư mục test.")
+        return
+
+    print("\n================== TỔNG KẾT ==================")
+    print(f"Kết quả đúng : {right_result}, Tỉ lệ đúng là: {right_result / total_images * 100:.2f}%")
+    print(f"Kết quả sai  : {wrong_result}, Tỉ lệ sai là: {wrong_result / total_images * 100:.2f}%")
 
 def main():
-    image_path = "app/static/img_test/cellulitis.webp"
-    if not os.path.exists(image_path):
-        logging.error("Ảnh đầu vào không tồn tại.")
-        return
     load_faiss_index()
-    label = process_pipeline(image_path)
-    logging.info(f"Kết quả cuối cùng cho ảnh {image_path}: {label}")
-
+    test_process_pipeline()
 if __name__ == "__main__":
     main()
