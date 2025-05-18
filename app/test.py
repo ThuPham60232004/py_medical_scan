@@ -9,6 +9,7 @@ from collections import Counter
 from google.cloud import storage
 from transformers import CLIPProcessor, CLIPModel
 from dotenv import load_dotenv
+from pathlib import Path
 
 load_dotenv()
 
@@ -27,6 +28,11 @@ processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
 index = None
 labels = {}
+
+def get_all_images(directory):
+    return list(Path(directory).rglob("*"))
+
+
 
 def upload_to_gcs(local_path, destination_blob_name):
     client = storage.Client.from_service_account_json(GCS_KEY_PATH)
@@ -111,6 +117,31 @@ def process_pipeline(image_path):
 
     final_label = decide_final_label(result_labels)
     print(f"\nNhãn cuối cùng được chọn: {final_label}")
+
+
+def test_process_pipeline():
+    Image_dir = "app/static/data_test"
+    get_all_images(Image_dir)
+    right_result=0
+    wrong_result=0
+    total_images=0
+    # duyệt qua từng ảnh trong thư mục
+    for image_path in get_all_images(Image_dir):
+        #Lấy tên ảnh bằng cách lấy tên file và thay thế các dấu _ bằng khoảng trắng
+        image_name = os.path.basename(image_path).replace("_", " ")
+
+        print(f"Processing {image_path}...")
+        result=process_pipeline(image_path)
+        print("Done.\n")
+        # Kiểm tra kết quả
+        if result == image_name:
+            right_result+=1
+        else:
+            wrong_result+=1
+        total_images+=1
+    print(f"Kết quả đúng : {right_result},Tỉ lệ đúng là: {right_result/total_images*100}%")
+    print(f"Kết quả sai : {wrong_result},Tỉ lệ sai là: {wrong_result/total_images*100}%")
+
 
 def main():
     image_path = "app/static/img_test/cellulitis.webp"
