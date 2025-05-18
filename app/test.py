@@ -380,11 +380,11 @@ def compare_descriptions_and_labels(description, label):
     except Exception as e:
         print(f"Lỗi khi gọi Gemini: {e}")
         return []
-def ask_user_questions(questions):
+def ask_user_questions(questions,diease_name):
     answers = []
     for idx, q in enumerate(questions, 1):
         print(f"Câu {idx}: {q}")
-        answer = input("Trả lời của bạn: ")
+        answer = answer_question(q,diease_name)
         answers.append(f"Câu hỏi: {q}\nTrả lời: {answer}")
     return "\n\n".join(answers)
        
@@ -451,6 +451,109 @@ def filter_incorrect_labels_by_user_description(description: str, labels: list[s
         print(f"Lỗi khi tạo mô tả với Gemini: {e}")
         return None
     
+def get_all_images(directory):
+    return list(Path(directory).rglob("*"))
+
+
+def test_process_pipeline(ketqua):
+    Image_dir = "app/static/data_test"
+    get_all_images(Image_dir)
+    right_result=0
+    wrong_result=0
+    total_images=0
+    # duyệt qua từng ảnh trong thư mục
+    for image_path in get_all_images(Image_dir):
+        #Lấy tên ảnh bằng cách lấy tên file và thay thế các dấu _ bằng khoảng trắng
+        image_name = os.path.basename(image_path).replace("_", " ")
+
+        print(f"Processing {image_path}...")
+        result=process_pipeline(image_path,image_name)
+        print("Done.\n")
+        # Kiểm tra kết quả
+        if result == image_name:
+            right_result+=1
+        else:
+            wrong_result+=1
+        total_images+=1
+    print(f"Kết quả đúng : {right_result},Tỉ lệ đúng là: {right_result/total_images*100}%")
+    print(f"Kết quả sai : {wrong_result},Tỉ lệ sai là: {wrong_result/total_images*100}%")
+
+def generate_description(diease_name):
+    prompt="""
+    Bạn là một bệnh nhân đang bị bệnh {diease_name}.
+    Bạn hãy mô tả triệu chứng của bạn bao gồm vị trí,thời gian,hình dạng và màu sắc,bạn cảm thấy thế nào, có lan rộng không
+    Ví dụ: Tôi bị ngứa ở tay, đã 2 tuần rồi, có mụn nước màu đỏ, cảm thấy ngứa và hơi đau, không lan rộng.
+    Trả về chuỗi có dạng như trên
+    """
+    try:
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        response = model.generate_content([prompt])
+        text = response.text.strip()
+        return text
+    except Exception as e:
+        print(f"Lỗi khi tạo mô tả với Gemini: {e}")
+        return None
+    
+def answer_question(question,disease_name):
+    prmopt="""Bạn là một bệnh nhân đang mắc phải bệnh {disease_name}. Hiện tại bạn đang trả lời các câu hỏi phân biệt {question}
+    của bác sĩ. Bạn hãy trả lời câu hỏi đó đúng nhất với bệnh {disease_name} mà bạn đang mắc phải.
+    Ví dụ : Nếu câu hỏi là "Bạn có bị ngứa không?" và bạn đang mắc bệnh ngứa thì bạn hãy trả lời là "Có, tôi bị ngứa".
+    Nếu bạn không mắc bệnh đó thì bạn hãy trả lời là "Không, tôi không bị ngứa".
+    Trả lời của bạn phải ngắn gọn và súc tích, không cần giải thích thêm.
+    """
+    try:
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        response = model.generate_content([prmopt])
+        text = response.text.strip()
+        return text
+    except Exception as e:
+        print(f"Lỗi khi tạo mô tả với Gemini: {e}")
+        return None
+    
+def process_pipeline(image_path,diease_name):
+    final_labels, result_labels, anomaly_result_labels=process_image(image_path)
+    print("Chuỗi mô tả bệnh tổng hợp:", final_labels)
+    user_description = generate_description(diease_name)
+    if not user_description:
+        print("\nĐang chọn nhãn dựa trên hình ảnh và mô hình...")
+        final_diagnosis = decide_final_label(final_labels)
+        print(f"\nKết quả sơ bộ: {final_diagnosis}")
+        print("Thông báo: Vì bạn không cung cấp mô tả, kết quả có thể chưa chính xác.")
+        return
+    image_description = generate_description_with_Gemini(image_path)
+    print("Mô tả từ ảnh (Gemini):", image_description)
+    result_medical_entities = generate_medical_entities(user_description, image_description)
+    print(result_medical_entities)
+    questions = compare_descriptions_and_labels(result_medical_entities, final_labels)
+    print(final_labels)
+    if not questions:
+        print("Không tạo được câu hỏi phân biệt.")
+        return
+
+    print("\n--- Trả lời các câu hỏi để phân biệt bệnh ---")
+    user_answers = ask_user_questions(questions)
+    
+    print("\n--- Mô tả bổ sung từ người dùng ---")
+    print(user_answers)
+    combined_description = f"{result_medical_entities}\n\n{user_answers}"
+    print("\n--- Đang loại trừ nhãn không phù hợp ---")
+    result =filter_incorrect_labels_by_user_description(combined_description, final_labels)
+    if not result:
+        print("Không có kết quả từ Gemini.")
+        return
+    refined_labels = result.get("giu_lai", [])
+    if not refined_labels:
+        print("Không còn nhãn nào phù hợp. Đề xuất tham khảo bác sĩ.")
+    else:
+        print("Các nhãn còn lại sau loại trừ:")
+        for label_info in refined_labels:
+            label = label_info.get("label")
+            ket_qua = "-".join(label.split("-")[1:])
+            suitability = label_info.get("do_phu_hop")
+            print(f"- {ket_qua} (Mức độ phù hợp: {suitability})")
+    
+
+    
 def mainclient():
     download_from_gcs()
     load_faiss_index()
@@ -496,5 +599,8 @@ def mainclient():
             ket_qua = "-".join(label.split("-")[1:])
             suitability = label_info.get("do_phu_hop")
             print(f"- {ket_qua} (Mức độ phù hợp: {suitability})")
+
 if __name__ == "__main__":
     mainclient()
+    download_from_gcs()
+    load_faiss_index()
