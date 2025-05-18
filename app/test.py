@@ -10,7 +10,7 @@ from google.cloud import storage
 from transformers import CLIPProcessor, CLIPModel
 from dotenv import load_dotenv
 from pathlib import Path
-
+import re
 load_dotenv()
 
 GCS_BUCKET = "kltn-2025"
@@ -119,10 +119,6 @@ def process_pipeline(image_path):
     return final_label
 
 def clean_predicted_label(label: str) -> str:
-    """
-    Xóa tiền tố đầu tiên phân tách bằng dấu '-' và chuẩn hóa chữ thường.
-    Ví dụ: 'ba-ai-impetigo' -> 'ai-impetigo'
-    """
     if not label:
         return ""
     parts = label.strip().split("-")
@@ -130,6 +126,8 @@ def clean_predicted_label(label: str) -> str:
         return "-".join(parts[1:]).lower()
     return label.lower()
 
+def clean_actual_label(label: str) -> str:
+    return re.sub(r"\(\d+\)", "", label).strip().lower()
 def test_process_pipeline():
     image_dir = "app/static/data_test"
     right_result = 0
@@ -141,12 +139,14 @@ def test_process_pipeline():
 
         print(f"\n=== Processing: {image_path} ===")
         result = process_pipeline(image_path)
-        clean_result = clean_predicted_label(result)
 
-        print(f"Dự đoán: {clean_result}")
-        print(f"Thực tế: {image_name}")
+        predicted_label = clean_predicted_label(result)
+        actual_label = clean_actual_label(image_name)
 
-        if clean_result and clean_result in image_name:
+        print(f"Dự đoán: {predicted_label}")
+        print(f"Thực tế: {actual_label}")
+
+        if predicted_label.strip() == actual_label.strip():
             print("Kết quả: ĐÚNG")
             right_result += 1
         else:
@@ -160,8 +160,7 @@ def test_process_pipeline():
 
     print("\n================== TỔNG KẾT ==================")
     print(f"Kết quả đúng : {right_result}, Tỉ lệ đúng là: {right_result / total_images * 100:.2f}%")
-    print(f"Kết quả sai  : {wrong_result}, Tỉ lệ sai là: {wrong_result / total_images * 100:.2f}%")
-
+    print(f"Kết quả sai  : {wrong_result}, Tỉ lệ sai là: {wrong_result / total_images * 100:.2f}%")    
 def main():
     load_faiss_index()
     test_process_pipeline()
