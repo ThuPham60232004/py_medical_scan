@@ -19,6 +19,7 @@ from typing import Optional
 import logging
 from PIL import Image
 import textwrap
+from collections import Counter
 import re
 from sklearn.metrics.pairwise import cosine_similarity
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -238,14 +239,22 @@ def extract_keywords(text, field):
     return ", ".join(matched) if matched else text
 
 def collect_user_description():
-    print("Thu thập mô tả của bệnh nhân (hoặc nhấn Enter để bỏ qua):\n")
+    print("Bạn có muốn trả lời một vài câu hỏi để giúp chẩn đoán chính xác hơn không?")
+    choice = input("Nhập 'y' để trả lời hoặc 'n' để bỏ qua: ").strip().lower()
+
+    if choice != 'y':
+        print("\nBạn đã chọn không trả lời các câu hỏi.")
+        print("Thông báo: Nếu bạn không cung cấp đủ thông tin, bệnh trạng của bạn sẽ chưa chính xác.\n")
+        return None  # Người dùng không cung cấp mô tả
+
     try:
-        print("Bắt đầu thu thập mô tả bệnh, bệnh nhân vui lòng trả lời các câu hỏi sau:")
-        location = input("Cho mình hỏi bạn, bạn có thể cho biết vị trí của bệnh không? (Ví dụ: đầu gối, cổ tay,...)\n")
-        duration = input("Thời gian bạn bị bệnh là bao lâu rồi? (Ví dụ: 1 tuần, 2 tháng,...)\n")
-        appearance = input("Hình dạng của bệnh như thế nào? (Ví dụ: đỏ, sưng,...)\n")
-        feeling = input("Bạn cảm thấy như thế nào? (Ví dụ: đau, ngứa,...)\n")
-        spreading = input("Bệnh có lan rộng không? (Ví dụ: có, không)\n")
+        print("\nBắt đầu thu thập mô tả bệnh, vui lòng trả lời các câu hỏi sau:")
+        location = input("1. Vị trí của bệnh? (VD: đầu gối, cổ tay,...)\n")
+        duration = input("2. Thời gian bị bệnh? (VD: 1 tuần, 2 tháng,...)\n")
+        appearance = input("3. Hình dạng hoặc màu sắc vùng bệnh? (VD: đỏ, sưng,...)\n")
+        feeling = input("4. Cảm giác của bạn? (VD: đau, ngứa,...)\n")
+        spreading = input("5. Bệnh có lan rộng không? (VD: có, không)\n")
+
         location = extract_keywords(location, "location")
         duration = extract_keywords(duration, "duration")
         appearance = extract_keywords(appearance, "appearance")
@@ -255,13 +264,15 @@ def collect_user_description():
         description = (
             f"Triệu chứng xuất hiện ở {location}, đã kéo dài {duration}. "
             f"Vùng da có biểu hiện {appearance} và cảm giác {feeling}. "
-            f"Triệu chứng: {spreading} lan rộng.")
-        print("Đây là mô tả bệnh bạn đã cung cấp:\n")
+            f"Triệu chứng: {spreading} lan rộng."
+        )
+
+        print("\nĐây là mô tả bệnh bạn đã cung cấp:\n")
         print(description)
 
-        confirm = input("Bạn có muốn xác nhận mô tả này không? (y/n): ").strip().lower()
+        confirm = input("\nBạn có muốn xác nhận mô tả này không? (y/n): ").strip().lower()
         if confirm == 'y':
-            print("Mô tả bệnh của bạn đã được ghi nhận")
+            print("Mô tả bệnh của bạn đã được ghi nhận.")
             return description
         else:
             retry = input("Bạn muốn nhập lại mô tả bệnh? (y/n): ").strip().lower()
@@ -402,8 +413,14 @@ def process_image(image_path):
                 anomaly_result_labels = search_similar_images(anomaly_map_embedding)
                 print("Kết quả tìm kiếm từ Anomaly Map:", anomaly_result_labels)
     final_labels = combine_labels(result_labels, anomaly_result_labels)
-    print("Chuỗi mô tả bệnh tổng hợp:", final_labels)
     return final_labels, result_labels, anomaly_result_labels
+
+def decide_final_label(label_string):
+    labels = label_string.split()
+    processed_labels = [label.split('-', 1)[1] if '-' in label else label for label in labels]
+    counter = Counter(processed_labels)
+    most_common_two = counter.most_common(1)
+    return most_common_two[0][0]
 
 def filter_incorrect_labels_by_user_description(description: str, labels: list[str]) -> str:
     prompt = textwrap.dedent(f"""
@@ -433,13 +450,21 @@ def filter_incorrect_labels_by_user_description(description: str, labels: list[s
     except Exception as e:
         print(f"Lỗi khi tạo mô tả với Gemini: {e}")
         return None
+    
 def mainclient():
     download_from_gcs()
     load_faiss_index()
     image_path = "app/static/img_test/cellulitis.webp"
     print("File tồn tại:", os.path.exists(image_path))
     final_labels, result_labels, anomaly_result_labels=process_image(image_path)
+    print("Chuỗi mô tả bệnh tổng hợp:", final_labels)
     user_description = collect_user_description()
+    if not user_description:
+        print("\nĐang chọn nhãn dựa trên hình ảnh và mô hình...")
+        final_diagnosis = decide_final_label(final_labels)
+        print(f"\nKết quả sơ bộ: {final_diagnosis}")
+        print("Thông báo: Vì bạn không cung cấp mô tả, kết quả có thể chưa chính xác.")
+        return
     image_description = generate_description_with_Gemini(image_path)
     print("Mô tả từ ảnh (Gemini):", image_description)
     result_medical_entities = generate_medical_entities(user_description, image_description)
