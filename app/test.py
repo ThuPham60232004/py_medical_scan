@@ -242,6 +242,10 @@ def process_pipeline(image_path: str):
 
     return final_label
 
+def get_all_images(directory):
+    return list(Path(directory).rglob("*"))
+
+
 def test_process_pipeline():
     Image_dir = "app/static/data_test"
     get_all_images(Image_dir)
