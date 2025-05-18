@@ -35,9 +35,7 @@
 * **Chưa phát hiện ảnh bất thường (anomaly/outlier)**
 * **Gán nhãn cứng**: Chỉ dựa vào ảnh gần nhất, không có logic kiểm chứng sâu
 * **Độ chính xác phụ thuộc dữ liệu trong FAISS**
-* **Không cung cấp lý do rõ ràng cho quyết định** *(→ được cải thiện ở V2 với MMRAG)*
-Dưới đây là phần **nhược điểm của V1** kèm với **lý do cụ thể để nâng cấp lên V2**, bạn có thể tham khảo:
-
+* **Không cung cấp lý do rõ ràng cho quyết định**
 ---
 
 ## Nhược điểm của V1
