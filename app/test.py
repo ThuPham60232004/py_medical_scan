@@ -21,6 +21,7 @@ from PIL import Image
 import textwrap
 from collections import Counter
 import re
+from app.generate_description import generate_description
 from sklearn.metrics.pairwise import cosine_similarity
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -448,22 +449,8 @@ def get_all_images(directory):
     exts = [".jpg", ".jpeg", ".png", ".bmp"]
     return [p for p in Path(directory).rglob("*") if p.is_file() and p.suffix.lower() in exts]
 
-def generate_description(diease_name):
-    prompt="""
-    Bạn là một bệnh nhân đang bị bệnh {diease_name}.
-    Bạn hãy mô tả triệu chứng của bạn bao gồm vị trí,thời gian,hình dạng và màu sắc,bạn cảm thấy thế nào, có lan rộng không
-    Trả về chuỗi có dạng như sau:
-    "Triệu chứng xuất hiện ở [vị trí], đã kéo dài [thời gian]. Vùng da có biểu hiện [hình dạng và màu sắc] và cảm giác [cảm giác]. Triệu chứng: [lan rộng hay không]."
-    Ví dụ: "Triệu chứng xuất hiện ở tay, đã kéo dài 2 tuần. Vùng da có biểu hiện đỏ và cảm giác ngứa. Triệu chứng: không lan rộng.
-    """
-    try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        response = model.generate_content([prompt])
-        text = response.text.strip()
-        return text
-    except Exception as e:
-        print(f"Lỗi khi tạo mô tả với Gemini: {e}")
-        return None
+
+
     
 def answer_question(question,disease_name):
     prmopt="""Bạn là một bệnh nhân đang mắc phải bệnh {disease_name}. Hiện tại bạn đang trả lời các câu hỏi phân biệt {question}
@@ -490,6 +477,9 @@ def test_process_pipeline():
     right_result = 0
     wrong_result = 0
     total_images = 0
+    file_path ="app/static/test_result.json"
+    all_results = []  # Danh sách chứa tất cả kết quả
+
 
     for image_path in get_all_images(Image_dir):
         image_name = os.path.basename(image_path)
@@ -499,9 +489,21 @@ def test_process_pipeline():
         result = process_pipeline(image_path, image_name_cleaned)
         print(f"Dự đoán: {result}")
         print(f"Thực tế: {image_name_cleaned}")
+        json_data= {
+            "Dự đoán": result,
+            "Thực tế": image_name_cleaned
+        }
+        all_results.append(json_data)  # Thêm vào danh sách
+        # Ghi dữ liệu vào file JSON
+        with open(file_path, "w",encoding="utf-8") as file:
+            json.dump(all_results, file, ensure_ascii=False, indent=4)
+        print(f"Đã ghi dữ liệu vào {file_path}")
+
+
         if result and any(image_name_cleaned == label.lower() for label in result):
             right_result += 1
             print(f"Đúng")
+        
         else:
             wrong_result += 1
             print(f"[!] Sai: Dự đoán {result} | Thực tế: {image_name_cleaned}")

@@ -1,0 +1,101 @@
+[
+    {
+        "Dự đoán": [
+            "athlete-foot",
+            "ringworm",
+            "cellulitis",
+            "cutaneous-larva-migrans"
+        ],
+        "Thực tế": "athlete-foot"
+    },
+    {
+        "Dự đoán": [
+            "athlete-foot",
+            "ringworm",
+            "nail-fungus"
+        ],
+        "Thực tế": "athlete-foot"
+    },
+    {
+        "Dự đoán": [
+            "athlete-foot"
+        ],
+        "Thực tế": "athlete-foot"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "cellulitis"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "cellulitis"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "cellulitis"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "chickenpox"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "chickenpox"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "chickenpox"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "cutaneous-larva-migrans"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "cutaneous-larva-migrans"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "cutaneous-larva-migrans"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "impetigo"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "impetigo"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "nail-fungus"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "nail-fungus"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "ringworm"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "ringworm"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "ringworm"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "shingles"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "shingles"
+    },
+    {
+        "Dự đoán": null,
+        "Thực tế": "shingles"
+    }
+]
