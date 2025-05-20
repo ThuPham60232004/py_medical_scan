@@ -1,6 +1,7 @@
 import cv2
 import os
 import numpy as np
+import textwrap
 import torch
 import faiss
 import json
@@ -8,7 +9,6 @@ from pathlib import Path
 from google.cloud import storage
 from transformers import CLIPProcessor, CLIPModel
 from dotenv import load_dotenv
-import google.generativeai as genai
 from transformers import pipeline
 from huggingface_hub import login
 import timm
@@ -20,8 +20,11 @@ import logging
 from PIL import Image
 import textwrap
 from collections import Counter
+import google.generativeai as genai
+
 import re
-from app.generate_description import generate_description
+from app.gemini_medical import generate_medical_entities, compare_descriptions_and_labels
+from app.generate_description import generate_description, answer_question
 from sklearn.metrics.pairwise import cosine_similarity
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -61,7 +64,6 @@ model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
 vit_model = timm.create_model("vit_base_patch16_224", pretrained=True).to(device)
 vit_model.eval()
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 def download_from_gcs():
     storage_client = GCS_KEY_PATH
     bucket = storage_client.bucket(GCS_BUCKET)
@@ -315,62 +317,7 @@ def combine_labels(normal_labels: list, anomaly_labels: list) -> str:
     return " ".join(all_labels).strip()
 
 
-def generate_medical_entities(image_caption, user_description):
-    combined_description = f"1. Mô tả từ người dùng: {user_description}. 2. Mô tả từ ảnh: {image_caption}."
-    print(combined_description)
 
-    prompt = textwrap.dedent(f"""
-        Tôi có 2 đoạn mô tả sau về một vùng da bị bất thường: {combined_description}
-        Hãy chuẩn hóa cả hai mô tả, loại bỏ từ dư thừa, hợp nhất lại, và trích xuất các đặc trưng y khoa quan trọng.
-        Mỗi đặc trưng nên được gắn nhãn thuộc một trong ba loại sau:
-        - "Triệu chứng": mô tả biểu hiện, dấu hiệu lâm sàng (ví dụ: phát ban, ngứa, đỏ, bong tróc…)
-        - "Vị trí xuất hiện": vùng cơ thể bị ảnh hưởng (ví dụ: mu bàn tay, cẳng chân, ngón tay…)
-        - "Nguyên nhân": yếu tố gây ra tình trạng đó nếu có xuất hiện trong mô tả (ví dụ: côn trùng cắn, dị ứng, tiếp xúc hóa chất…)
-        Trả về kết quả dạng JSON Array. Mỗi phần tử là một object gồm:
-        - "entity": cụm từ y khoa
-        - "type": "Triệu chứng", "Vị trí xuất hiện", hoặc "Nguyên nhân"
-        Ví dụ đầu ra:
-        [
-          {{ "entity": "vết đỏ", "type": "Triệu chứng" }},
-          {{ "entity": "cẳng chân", "type": "Vị trí xuất hiện" }},
-          {{ "entity": "dị ứng thời tiết", "type": "Nguyên nhân" }}
-        ]
-        Chỉ liệt kê các đặc trưng có trong mô tả. Không suy luận thêm.
-    """)
-    try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        response = model.generate_content([prompt])
-        text = response.text.strip()
-        clean_text = re.sub(r"```(?:json)?|```", "", text).strip()
-        result = json.loads(clean_text)
-        decoded_result = json.dumps(result, ensure_ascii=False)
-        return decoded_result 
-
-    except Exception as e:
-        print(f"Lỗi khi tạo mô tả với Gemini: {e}")
-        return None
- 
-def compare_descriptions_and_labels(description, label):
-
-    prompt = textwrap.dedent(f"""
-        Mô tả: "{description}"
-        Nhãn: "{label}"
-        So sánh sự khác biệt giữa mô tả và nhãn bệnh. Sau đó, tạo ra 3 câu hỏi giúp phân biệt chính xác hơn.
-        Trả về kết quả theo định dạng:
-        1. ...
-        2. ...
-        3. ...
-    """)
-
-    try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        response = model.generate_content([prompt])
-        text = response.text.strip()
-        questions = re.findall(r"\d+\.\s+(.*)", text)
-        return questions
-    except Exception as e:
-        print(f"Lỗi khi gọi Gemini: {e}")
-        return []
 def ask_user_questions(questions,diease_name):
     answers = []
     for idx, q in enumerate(questions, 1):
@@ -452,20 +399,7 @@ def get_all_images(directory):
 
 
     
-def answer_question(question,disease_name):
-    prmopt="""Bạn là một bệnh nhân đang mắc phải bệnh {disease_name}. Hiện tại bạn đang trả lời các câu hỏi phân biệt {question}
-    của bác sĩ. Bạn hãy trả lời câu hỏi đó đúng nhất với bệnh {disease_name} mà bạn đang mắc phải.
-    Ví dụ bạn đang bị đậu mùa. Khi bác sĩ hỏi bạn "Bạn có cảm thấy ngứa không?" thì bạn hãy trả lời là "Có" hoặc "Không" tùy theo triệu chứng của bạn.
-    Nếu bạn không biết câu trả lời, hãy trả lời là "Tôi không biết". Chỉ đưa ra câu trả lời của câu hỏi ngoài ra không cần giải thích gì thêm.
-    """
-    try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        response = model.generate_content([prmopt])
-        text = response.text.strip()
-        return text
-    except Exception as e:
-        print(f"Lỗi khi tạo mô tả với Gemini: {e}")
-        return None
+
     
 def clean_image_name(image_name):
     name = os.path.splitext(image_name)[0]  
@@ -473,52 +407,68 @@ def clean_image_name(image_name):
     return name.strip().lower()
 
 def test_process_pipeline():
-    Image_dir = "app/static/data_test"
-    right_result = 0
-    wrong_result = 0
-    total_images = 0
-    file_path ="app/static/test_result.json"
-    all_results = []  # Danh sách chứa tất cả kết quả
+    image_dir = "app/static/data_test"
+    file_path = "app/static/test_result.json"
+
+    # Lấy danh sách tất cả ảnh và sắp xếp để đảm bảo thứ tự nhất quán
+    all_images = sorted(get_all_images(image_dir))
+    if not all_images:
+        print("[!] Không tìm thấy ảnh trong thư mục.")
+        return
+
+    # Hiển thị danh sách ảnh (tuỳ chọn)
+    print("\nDanh sách ảnh:")
+    for idx, img_path in enumerate(all_images):
+        print(f"{idx + 1}. {os.path.basename(img_path)}")
+
+    # Nhập vị trí (số thứ tự)
+    try:
+        vitri = int(input("\nNhập vị trí ảnh (số thứ tự bắt đầu từ 1): "))
+        if vitri < 1 or vitri > len(all_images):
+            print(f"[!] Vị trí không hợp lệ. Chọn từ 1 đến {len(all_images)}.")
+            return
+    except ValueError:
+        print("[!] Vui lòng nhập một số hợp lệ.")
+        return
+
+    # Lấy ảnh tương ứng
+    image_path = all_images[vitri - 1]
+    image_name = os.path.basename(image_path)
+    image_name_cleaned = clean_image_name(image_name)
+
+    print(f"\n=== Đang xử lý ảnh: {image_path} ===")
+    result = process_pipeline(image_path, image_name_cleaned)
+
+    print(f"Dự đoán: {result}")
+    print(f"Thực tế: {image_name_cleaned}")
+
+    # Kiểm tra đúng/sai
+    is_correct = result and any(image_name_cleaned == label.lower() for label in result)
+    ket_qua = "Đúng" if is_correct else "Sai"
+
+    print(f"Kết quả: {ket_qua}")
+    print(f"Đường dẫn ảnh: {image_path}")
+
+    # Tạo dict kết quả để trả về hoặc ghi file
+    json_data = {
+        "Dự đoán": result,
+        "Thực tế": image_name_cleaned,
+        "Kết quả": ket_qua
+    }
+
+    # Ghi ra file (tuỳ chọn bật lại nếu cần)
+    # with open(file_path, "w", encoding="utf-8") as file:
+    #     json.dump(json_data, file, ensure_ascii=False, indent=4)
+
+    print(f"\nHoàn tất. Có thể ghi kết quả vào {file_path} nếu cần.")
+    return json_data
 
 
-    for image_path in get_all_images(Image_dir):
-        image_name = os.path.basename(image_path)
-        image_name_cleaned = clean_image_name(image_name)
-
-        print(f"\n=== Processing {image_path} ===")
-        result = process_pipeline(image_path, image_name_cleaned)
-        print(f"Dự đoán: {result}")
-        print(f"Thực tế: {image_name_cleaned}")
-        json_data= {
-            "Dự đoán": result,
-            "Thực tế": image_name_cleaned
-        }
-        all_results.append(json_data)  # Thêm vào danh sách
-        # Ghi dữ liệu vào file JSON
-        with open(file_path, "w",encoding="utf-8") as file:
-            json.dump(all_results, file, ensure_ascii=False, indent=4)
-        print(f"Đã ghi dữ liệu vào {file_path}")
-
-
-        if result and any(image_name_cleaned == label.lower() for label in result):
-            right_result += 1
-            print(f"Đúng")
-        
-        else:
-            wrong_result += 1
-            print(f"[!] Sai: Dự đoán {result} | Thực tế: {image_name_cleaned}")
-
-        total_images += 1
-        print("Done.\n")
-
-    print("\n=== TỔNG KẾT ===")
-    print(f"Kết quả đúng : {right_result}, Tỉ lệ đúng: {right_result / total_images * 100:.2f}%")
-    print(f"Kết quả sai  : {wrong_result}, Tỉ lệ sai : {wrong_result / total_images * 100:.2f}%")
-    
 def process_pipeline(image_path,diease_name):
     final_labels=process_image(image_path)
     print("Chuỗi mô tả bệnh tổng hợp:", final_labels)
     user_description = generate_description(diease_name)
+    print("Mô tả bệnh từ người dùng :", user_description)
     if not user_description:
         print("\nĐang chọn nhãn dựa trên hình ảnh và mô hình...")
         final_diagnosis = decide_final_label(final_labels)
@@ -561,6 +511,11 @@ def process_pipeline(image_path,diease_name):
 def mainclient():
     download_from_gcs()
     load_faiss_index()
-    test_process_pipeline()
+    all_result=[]
+    result = test_process_pipeline()
+    all_result.append(result)
+    print(result)
+    with open("app/static/test_result.json", "w", encoding="utf-8") as file:
+        json.dump(all_result, file, ensure_ascii=False, indent=4)
 if __name__ == "__main__":
     mainclient()
