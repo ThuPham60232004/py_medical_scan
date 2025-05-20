@@ -1,6 +1,7 @@
 import cv2
 import os
 import numpy as np
+import textwrap
 import torch
 import faiss
 import json
@@ -8,7 +9,6 @@ from pathlib import Path
 from google.cloud import storage
 from transformers import CLIPProcessor, CLIPModel
 from dotenv import load_dotenv
-import google.generativeai as genai
 from transformers import pipeline
 from huggingface_hub import login
 import timm
@@ -19,11 +19,13 @@ from typing import Optional
 import logging
 from PIL import Image
 import textwrap
-import re
-import requests
-import xml.etree.ElementTree as ET
-from sklearn.metrics.pairwise import cosine_similarity
 from collections import Counter
+import google.generativeai as genai
+
+import re
+from app.gemini_medical import generate_medical_entities, compare_descriptions_and_labels
+from app.generate_description import generate_description, answer_question
+from sklearn.metrics.pairwise import cosine_similarity
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 load_dotenv()
@@ -62,7 +64,6 @@ model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
 vit_model = timm.create_model("vit_base_patch16_224", pretrained=True).to(device)
 vit_model.eval()
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 def download_from_gcs():
     storage_client = GCS_KEY_PATH
     bucket = storage_client.bucket(GCS_BUCKET)
@@ -83,14 +84,6 @@ def download_from_gcs():
         blob.download_to_filename(local_path)
         print(f"Tải về {gcs_path} to {local_path}")
         
-def upload_to_gcs(local_path, destination_blob_name):
-    """Upload file lên Google Cloud Storage."""
-    client = storage.Client.from_service_account_json("app/gsc-key.json")
-    bucket = client.bucket(GCS_BUCKET)
-    blob = bucket.blob(destination_blob_name)
-    blob.upload_from_filename(local_path)
-    print(f"Đã upload {local_path} lên GCS tại: gs://{GCS_BUCKET}/{destination_blob_name}")
-
 def preprocess_image(image_path):
     """Tiền xử lý ảnh bằng Gaussian Blur và Canny Edge Detection."""
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
@@ -110,31 +103,29 @@ def embed_image(image_path):
     with torch.no_grad():
         embedding = model.get_image_features(**inputs)
     return embedding.cpu().numpy().astype(np.float32)
-def generate_anomaly_map(image_path: str) -> Optional[np.ndarray]:
-    """
-    Sinh anomaly map từ ảnh đầu vào bằng ViT feature extractor và resize lại theo kích thước ảnh gốc.
-    """
-    try:
-        img = Image.open(image_path).convert("RGB")
-        original_size = img.size  
-        transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-        ])
-        img_tensor = transform(img).unsqueeze(0).to(device)
+def generate_anomaly_map(image_path: str) -> np.ndarray:
+    img_pil = Image.open(image_path).convert("RGB")
+    original_size = img_pil.size 
+    img_np = np.array(img_pil)  
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+    ])
+    img_tensor = transform(img_pil).unsqueeze(0).to(device)
+    with torch.no_grad():
+        features = vit_model.forward_features(img_tensor)
+    feature_map = features.mean(dim=1).squeeze().cpu().numpy()
+    anomaly_map = (feature_map - np.min(feature_map)) / (np.ptp(feature_map) + 1e-6)
+    anomaly_map_resized = cv2.resize(anomaly_map, original_size, interpolation=cv2.INTER_CUBIC)
+    anomaly_map_uint8 = (anomaly_map_resized * 255).astype(np.uint8)
+    heatmap = cv2.applyColorMap(anomaly_map_uint8, cv2.COLORMAP_JET)
+    img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+    overlay = cv2.addWeighted(img_bgr, 0.6, heatmap, 0.4, 0)
+    _, binary_mask = cv2.threshold(anomaly_map_uint8, 180, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(overlay, contours, -1, (0, 0, 255), 2)
 
-        with torch.no_grad():
-            features = vit_model.forward_features(img_tensor)  
-        feature_map = features.mean(dim=1).squeeze().cpu().numpy()
-        anomaly_map = (feature_map - np.min(feature_map)) / (np.ptp(feature_map) + 1e-6)
-        anomaly_map = (anomaly_map * 255).astype(np.uint8)
-        anomaly_map_resized = cv2.resize(anomaly_map, original_size, interpolation=cv2.INTER_CUBIC)
-
-        return anomaly_map_resized
-
-    except Exception as e:
-        print(f"Lỗi tạo Anomaly Map: {e}")
-        return None
+    return overlay
 
 def embed_anomaly_map(anomaly_map_path: str):
     """Nhúng anomaly map thành vector sử dụng mô hình CLIP."""
@@ -241,14 +232,22 @@ def extract_keywords(text, field):
     return ", ".join(matched) if matched else text
 
 def collect_user_description():
-    print("Thu thập mô tả của bệnh nhân (hoặc nhấn Enter để bỏ qua):\n")
+    print("Bạn có muốn trả lời một vài câu hỏi để giúp chẩn đoán chính xác hơn không?")
+    choice = input("Nhập 'y' để trả lời hoặc 'n' để bỏ qua: ").strip().lower()
+
+    if choice != 'y':
+        print("\nBạn đã chọn không trả lời các câu hỏi.")
+        print("Thông báo: Nếu bạn không cung cấp đủ thông tin, bệnh trạng của bạn sẽ chưa chính xác.\n")
+        return None  # Người dùng không cung cấp mô tả
+
     try:
-        print("Bắt đầu thu thập mô tả bệnh, bệnh nhân vui lòng trả lời các câu hỏi sau:")
-        location = input("Cho mình hỏi bạn, bạn có thể cho biết vị trí của bệnh không? (Ví dụ: đầu gối, cổ tay,...)\n")
-        duration = input("Thời gian bạn bị bệnh là bao lâu rồi? (Ví dụ: 1 tuần, 2 tháng,...)\n")
-        appearance = input("Hình dạng của bệnh như thế nào? (Ví dụ: đỏ, sưng,...)\n")
-        feeling = input("Bạn cảm thấy như thế nào? (Ví dụ: đau, ngứa,...)\n")
-        spreading = input("Bệnh có lan rộng không? (Ví dụ: có, không)\n")
+        print("\nBắt đầu thu thập mô tả bệnh, vui lòng trả lời các câu hỏi sau:")
+        location = input("1. Vị trí của bệnh? (VD: đầu gối, cổ tay,...)\n")
+        duration = input("2. Thời gian bị bệnh? (VD: 1 tuần, 2 tháng,...)\n")
+        appearance = input("3. Hình dạng hoặc màu sắc vùng bệnh? (VD: đỏ, sưng,...)\n")
+        feeling = input("4. Cảm giác của bạn? (VD: đau, ngứa,...)\n")
+        spreading = input("5. Bệnh có lan rộng không? (VD: có, không)\n")
+
         location = extract_keywords(location, "location")
         duration = extract_keywords(duration, "duration")
         appearance = extract_keywords(appearance, "appearance")
@@ -258,13 +257,15 @@ def collect_user_description():
         description = (
             f"Triệu chứng xuất hiện ở {location}, đã kéo dài {duration}. "
             f"Vùng da có biểu hiện {appearance} và cảm giác {feeling}. "
-            f"Triệu chứng: {spreading} lan rộng.")
-        print("Đây là mô tả bệnh bạn đã cung cấp:\n")
+            f"Triệu chứng: {spreading} lan rộng."
+        )
+
+        print("\nĐây là mô tả bệnh bạn đã cung cấp:\n")
         print(description)
 
-        confirm = input("Bạn có muốn xác nhận mô tả này không? (y/n): ").strip().lower()
+        confirm = input("\nBạn có muốn xác nhận mô tả này không? (y/n): ").strip().lower()
         if confirm == 'y':
-            print("Mô tả bệnh của bạn đã được ghi nhận")
+            print("Mô tả bệnh của bạn đã được ghi nhận.")
             return description
         else:
             retry = input("Bạn muốn nhập lại mô tả bệnh? (y/n): ").strip().lower()
@@ -316,72 +317,20 @@ def combine_labels(normal_labels: list, anomaly_labels: list) -> str:
     return " ".join(all_labels).strip()
 
 
-def generate_medical_entities(image_caption, user_description):
-    combined_description = f"1. Mô tả từ người dùng: {user_description}. 2. Mô tả từ ảnh: {image_caption}."
-    print(combined_description)
 
-    prompt = textwrap.dedent(f"""
-        Tôi có 2 đoạn mô tả sau về một vùng da bị bất thường: {combined_description}
-        Hãy chuẩn hóa cả hai mô tả, loại bỏ từ dư thừa, hợp nhất lại, và trích xuất các đặc trưng y khoa quan trọng.
-        Mỗi đặc trưng nên được gắn nhãn thuộc một trong ba loại sau:
-        - "Triệu chứng": mô tả biểu hiện, dấu hiệu lâm sàng (ví dụ: phát ban, ngứa, đỏ, bong tróc…)
-        - "Vị trí xuất hiện": vùng cơ thể bị ảnh hưởng (ví dụ: mu bàn tay, cẳng chân, ngón tay…)
-        - "Nguyên nhân": yếu tố gây ra tình trạng đó nếu có xuất hiện trong mô tả (ví dụ: côn trùng cắn, dị ứng, tiếp xúc hóa chất…)
-        Trả về kết quả dạng JSON Array. Mỗi phần tử là một object gồm:
-        - "entity": cụm từ y khoa
-        - "type": "Triệu chứng", "Vị trí xuất hiện", hoặc "Nguyên nhân"
-        Ví dụ đầu ra:
-        [
-          {{ "entity": "vết đỏ", "type": "Triệu chứng" }},
-          {{ "entity": "cẳng chân", "type": "Vị trí xuất hiện" }},
-          {{ "entity": "dị ứng thời tiết", "type": "Nguyên nhân" }}
-        ]
-        Chỉ liệt kê các đặc trưng có trong mô tả. Không suy luận thêm.
-    """)
-    try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        response = model.generate_content([prompt])
-        text = response.text.strip()
-        clean_text = re.sub(r"```(?:json)?|```", "", text).strip()
-        result = json.loads(clean_text)
-        decoded_result = json.dumps(result, ensure_ascii=False)
-        return decoded_result 
-
-    except Exception as e:
-        print(f"Lỗi khi tạo mô tả với Gemini: {e}")
-        return None
- 
-def compare_descriptions_and_labels(description, label):
-
-    prompt = textwrap.dedent(f"""
-        Mô tả: "{description}"
-        Nhãn: "{label}"
-        So sánh sự khác biệt giữa mô tả và nhãn bệnh. Sau đó, tạo ra 3 câu hỏi giúp phân biệt chính xác hơn.
-        Trả về kết quả theo định dạng:
-        1. ...
-        2. ...
-        3. ...
-    """)
-
-    try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        response = model.generate_content([prompt])
-        text = response.text.strip()
-        questions = re.findall(r"\d+\.\s+(.*)", text)
-        return questions
-    except Exception as e:
-        print(f"Lỗi khi gọi Gemini: {e}")
-        return []
-def ask_user_questions(questions):
+def ask_user_questions(questions,diease_name):
     answers = []
     for idx, q in enumerate(questions, 1):
         print(f"Câu {idx}: {q}")
-        answer = input("Trả lời của bạn: ")
+        answer = answer_question(q,diease_name)
         answers.append(f"Câu hỏi: {q}\nTrả lời: {answer}")
     return "\n\n".join(answers)
        
 def process_image(image_path):
     """Xử lý ảnh đầu vào, tạo Anomaly Map và nhúng Anomaly Map, tìm kiếm nhãn bệnh."""
+    result_labels = []
+    anomaly_result_labels = []
+
     processed = preprocess_image(image_path)
     anomaly_map = generate_anomaly_map(image_path)
     if processed is not None:
@@ -390,7 +339,6 @@ def process_image(image_path):
 
         processed_path = processed_dir / f"{Path(image_path).stem}_processed.jpg"
         cv2.imwrite(str(processed_path), processed)
-        upload_to_gcs(str(processed_path), GCS_IMAGE_PATH + str(processed_path.name))
         embedding = embed_image(image_path)
         if embedding is not None:
             result_labels = search_similar_images(embedding)
@@ -404,9 +352,16 @@ def process_image(image_path):
             if anomaly_map_embedding is not None:
                 anomaly_result_labels = search_similar_images(anomaly_map_embedding)
                 print("Kết quả tìm kiếm từ Anomaly Map:", anomaly_result_labels)
+
     final_labels = combine_labels(result_labels, anomaly_result_labels)
-    print("Chuỗi mô tả bệnh tổng hợp:", final_labels)
-    return final_labels, result_labels, anomaly_result_labels
+    return final_labels
+
+def decide_final_label(label_string):
+    labels = label_string.split()
+    processed_labels = [label.split('-', 1)[1] if '-' in label else label for label in labels]
+    counter = Counter(processed_labels)
+    most_common_two = counter.most_common(1)
+    return most_common_two[0][0]
 
 def filter_incorrect_labels_by_user_description(description: str, labels: list[str]) -> str:
     prompt = textwrap.dedent(f"""
@@ -436,246 +391,87 @@ def filter_incorrect_labels_by_user_description(description: str, labels: list[s
     except Exception as e:
         print(f"Lỗi khi tạo mô tả với Gemini: {e}")
         return None
-
-def upload_json_to_gcs(bucket_name: str, destination_blob_name: str, source_file_name: str):
-    client = storage.Client.from_service_account_json("app/gsc-key.json")
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(destination_blob_name)
-    blob.upload_from_filename(source_file_name)
-    print(f"Uploaded {source_file_name} to {destination_blob_name}.")
     
-def append_disease_to_json(file_path: str, new_disease: dict):
-    with open(file_path, 'r+', encoding='utf-8') as f:
-        try:
-            data = json.load(f)
-        except json.JSONDecodeError:
-            data = []
-        data.append(new_disease)
-        f.seek(0)
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.truncate()
-    print(f"Added new disease: {new_disease.get('name', '')}")
-def search_disease_in_json(file_path: str, disease_name: str):
-    with open(file_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+def get_all_images(directory):
+    exts = [".jpg", ".jpeg", ".png", ".bmp"]
+    return [p for p in Path(directory).rglob("*") if p.is_file() and p.suffix.lower() in exts]
 
-    if not isinstance(data, list):
-        print("File JSON không phải là danh sách.")
-        return []
 
-    results = [
-        entry for entry in data
-        if isinstance(entry, dict) and disease_name.lower() in entry.get("Tên bệnh", "").lower()
-    ]
-    return results
-def generate_keyword(keyword):
-    prompt = f"""
-    Bạn  là một người có kiến thức sâu rộng về y khoa dựa vào keyword được truyền vào.
-    Keyword là tên bệnh tôi cần bạn tạo ra danh sách tên bệnh liên quan đến keyword đó.
-    Ví dụ tên bệnh là: Squamouscell thì bạn có thể liệt kê các keyword liên quan đến tên như: Squamouse, Squamouse cell, Squamouse Cancer,..
-    Tối đa  là 10 từ khóa liên quan đến tên bệnh đó.
-    Trả về dưới dạng json với cấu trúc như sau:
-    ```json
-    {{
-        "keyword": [
-            "keyword1",
-            "keyword2",
-            "keyword3",
-            "keyword4",
-            "keyword5",
-            "keyword6",
-            "keyword7",
-            "keyword8",
-            "keyword9",
-            "keyword10"
-        ]
-    }}
-    ```
-    """
+
+    
+
+    
+def clean_image_name(image_name):
+    name = os.path.splitext(image_name)[0]  
+    name = re.sub(r"\(\d+\)", "", name)    
+    return name.strip().lower()
+
+def test_process_pipeline():
+    image_dir = "app/static/data_test"
+    file_path = "app/static/test_result.json"
+
+    # Lấy danh sách tất cả ảnh và sắp xếp để đảm bảo thứ tự nhất quán
+    all_images = sorted(get_all_images(image_dir))
+    if not all_images:
+        print("[!] Không tìm thấy ảnh trong thư mục.")
+        return
+
+    # Hiển thị danh sách ảnh (tuỳ chọn)
+    print("\nDanh sách ảnh:")
+    for idx, img_path in enumerate(all_images):
+        print(f"{idx + 1}. {os.path.basename(img_path)}")
+
+    # Nhập vị trí (số thứ tự)
     try:
-        if not keyword:
-            return "Không có từ khóa truyền vào"
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content(prompt)
-        result = response.text.strip()
-        result = re.sub(r"^(?:\w+)?\n|\n$", "", result).strip()
-        
-        if not result:
-            return "Không có thông tin"
-        return result
-    except Exception as e:
-        print(f"Lỗi khi tạo từ khóa: {e}")
-        return "Xảy ra lỗi trong quá trình tạo từ khóa"
-    
-def search_medlineplus(ten_khoa_hoc):
-    if not ten_khoa_hoc or ten_khoa_hoc == "Không tìm thấy":
-        return "Không có tên bệnh truyền vào"
-    print(f"Tìm kiếm thông tin bệnh '{ten_khoa_hoc}' trên MedLinePlus...")
-    keyword = generate_keyword(ten_khoa_hoc)
+        vitri = int(input("\nNhập vị trí ảnh (số thứ tự bắt đầu từ 1): "))
+        if vitri < 1 or vitri > len(all_images):
+            print(f"[!] Vị trí không hợp lệ. Chọn từ 1 đến {len(all_images)}.")
+            return
+    except ValueError:
+        print("[!] Vui lòng nhập một số hợp lệ.")
+        return
 
-    url = 'https://wsearch.nlm.nih.gov/ws/query'
-    params = {
-        'db': 'healthTopics',
-        'term': f'{ten_khoa_hoc}'
+    # Lấy ảnh tương ứng
+    image_path = all_images[vitri - 1]
+    image_name = os.path.basename(image_path)
+    image_name_cleaned = clean_image_name(image_name)
+
+    print(f"\n=== Đang xử lý ảnh: {image_path} ===")
+    result = process_pipeline(image_path, image_name_cleaned)
+
+    print(f"Dự đoán: {result}")
+    print(f"Thực tế: {image_name_cleaned}")
+
+    # Kiểm tra đúng/sai
+    is_correct = result and any(image_name_cleaned == label.lower() for label in result)
+    ket_qua = "Đúng" if is_correct else "Sai"
+
+    print(f"Kết quả: {ket_qua}")
+    print(f"Đường dẫn ảnh: {image_path}")
+
+    # Tạo dict kết quả để trả về hoặc ghi file
+    json_data = {
+        "Dự đoán": result,
+        "Thực tế": image_name_cleaned,
+        "Kết quả": ket_qua
     }
-    response = requests.get(url, params=params)
-    if response.status_code == 200:
-        print("Tìm kiếm thành công!")
 
-        cleaned_content = clean_xml_content(response.content)
-        print (cleaned_content)
-        return cleaned_content
-    
-    for item in keyword.get("keyword"):
-        print(f"Tìm kiếm thông tin bệnh '{item}' trên MedLinePlus...")
-        params = {
-            'db': 'healthTopics',
-            'term': f'{item}'
-        }
-        response = requests.get(url, params=params)
-        if response.status_code == 200:
-            print("Tìm kiếm thành công!")
-            cleaned_content = clean_xml_content(response.content)
-            return cleaned_content
-    return None
-def clean_xml_content(xml_content: str) -> str:
-    """
-    Nhận vào một chuỗi XML, trích xuất và kết hợp nội dung văn bản từ tất cả các phần tử.
+    # Ghi ra file (tuỳ chọn bật lại nếu cần)
+    # with open(file_path, "w", encoding="utf-8") as file:
+    #     json.dump(json_data, file, ensure_ascii=False, indent=4)
 
-    Args:
-        xml_content (str): Chuỗi XML đầu vào.
+    print(f"\nHoàn tất. Có thể ghi kết quả vào {file_path} nếu cần.")
+    return json_data
 
-    Returns:
-        str: Văn bản được trích xuất và làm sạch từ XML.
-    """
-    try:
-        root = ET.fromstring(xml_content)
-        text_nodes = [elem.text.strip() for elem in root.iter() if elem.text and elem.text.strip()]
-        return ' '.join(text_nodes)
 
-    except ET.ParseError as e:
-        print(f"Lỗi phân tích XML: {e}")
-        return ""
-    
-def decide_final_label(label_string):
-    labels = label_string.split()
-    processed_labels = [label.split('-', 1)[1] if '-' in label else label for label in labels]
-    counter = Counter(processed_labels)
-    most_common_two = counter.most_common(1)
-    return most_common_two[0][0]
 
-def extract_medical_info(text):
-    prompt = f"""
-    Dịch văn bản về tiếng việt
-    Bạn là một chuyên gia y tế, bạn có khả năng trích xuất thông tin y khoa từ văn bản.
-    Hãy trích xuất thông tin y khoa từ văn bản dưới dạng JSON hợp lệ **không chứa Markdown**.
-    Chỉ lấy kết quả đầu tiên mà bạn tìm được
-    Hãy trích xuất thật chi tiết
-
-    Văn bản đầu vào là:
-    {text}
-    {{
-        "Tên bệnh":"", Tên bệnh là tên của bệnh được ghi ở đầu tiêu đề
-        "Tên khoa học": "", Tên khoa học thường được ghi bằng tiếng anh hoặc tiếng latinh, nếu không thấy thì tên khoa học sẽ bằng tên bệnh nhưng chỉ lấy phần tiếng anh
-        "Triệu chứng": "", Triệu chứng là những dấu hiệu mà bệnh nhân có thể gặp phải khi mắc bệnh này, nếu không tìm thấy thì có thể đổi từ tên bệnh sang tiếng anh
-        "Vị trí xuất hiện": "", Vị trí xuất hiện là nơi mà bệnh này có thể xảy ra trên cơ thể người,
-        "Nguyên nhân": "",  Nguyên nhân là lý do mà bệnh này xảy ra
-        "Tiêu chí chẩn đoán": "",  Tiêu chí chẩn đoán là những tiêu chí mà bác sĩ có thể sử dụng để xác định bệnh này
-        "Chẩn đoán phân biệt": "",  Chẩn đoán phân biệt là những bệnh khác mà bác sĩ có thể xem xét khi xác định bệnh này
-        "Điều trị": "",  Điều trị là những phương pháp mà bác sĩ có thể sử dụng để điều trị bệnh này
-        "Phòng bệnh": "" , Phòng bệnh là những biện pháp mà bác sĩ có thể khuyên bệnh nhân thực hiện để ngăn ngừa bệnh này
-        "Các loại thuốc":
-        [{{
-            "Tên thuốc": "", 
-            "Liều lượng": "", 
-            "Thời gian sử dụng": ""
-        }}]
-    }}
-
-    - Nếu không có thông tin, đặt giá trị "Không tìm thấy".
-    - Không thêm giải thích, không in Markdown, không thêm ký tự thừa.
-    """
-
-    try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content(prompt)
-        raw_text = response.text if hasattr(response, "text") else response.parts[0].text
-        raw_text = re.sub(r"^```json\n|\n```$", "", raw_text)
-        extracted_info = json.loads(raw_text)
-        completed_info = clean_text_json(extracted_info)
-        return completed_info
-
-    except json.JSONDecodeError:
-        print("Lỗi: Không thể parse JSON từ Gemini.")
-        return {}
-    except Exception as e:
-        print(f"Lỗi trích xuất thông tin y khoa: {e}")
-        return {}
-    
-def clean_text(text: str) -> str:
-    """Làm sạch một chuỗi văn bản."""
-    if not isinstance(text, str):
-        return text
-    text = re.sub(r'[\\\n\r\t\*\]]', ' ', text)
-    text = re.sub(r'\s+', ' ', text) 
-    return text.strip()
    
-def clean_text_json(data):
-    """Làm sạch toàn bộ văn bản trong một cấu trúc JSON."""
-    if isinstance(data, dict):
-        return {key: clean_text_json(value) for key, value in data.items()}
-    elif isinstance(data, list):
-        return [clean_text_json(item) for item in data]
-    else:
-        return clean_text(data)
-def translate_disease_name(disease_name):
-    prompt=f"""Bạn là một chuyên gia y tế có hiểu biết sâu rộng về y khoa.
-    Bạn có khả năng dịch tên bệnh từ tiếng anh sang tiếng việt.
-    Tên bệnh được truyền vào là: {disease_name}
-    Hãy dịch tên bệnh đó sang tiếng việt.
-    Trả về tên bệnh đóđó
-    """
-    try:
-        if(not disease_name):
-            return "Không có tên bệnh truyền vào"
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content(prompt)
-        result = response.text.strip()
-        result = re.sub(r"^(?:\w+)?\n|\n$", "", result).strip()
 
-        if not result:
-            return "Chúng tôi không thể dịch tên bệnh này"
-        return result
-    except Exception as e:
-        print(f"Lỗi khi dịch tên bệnh: {e}")
-        return "Xảy ra lỗi trong quá trình dịch tên bệnh"
-def search_final(name):
-    translate_name=translate_disease_name(name)
-    print(f"Tên bệnh đã dịch: {translate_name}")
-    search_json_result = search_disease_in_json(LOCAL_DATASET_PATH, translate_name)
-    if search_json_result:
-        print(f"Kết quả tìm kiếm trong file JSON: {search_json_result}")
-    else:
-        print(f"Không tìm thấy tên bệnh '{translate_name}' trong file JSON.")
-        print ("Bắt đầu tìm kiếm bằng MedlinePlus...")
-        search_medline_result = search_medlineplus(name)
-        print(f"Kết quả tìm kiếm MedlinePlus: {search_medline_result}")
-        print ("Bắt đầu trích xuất thông tin y khoa từ MedlinePlus...")
-        extract_medical_info_result = extract_medical_info(search_medline_result)
-        if extract_medical_info_result:
-            print(f"Kết quả trích xuất thông tin y khoa: {extract_medical_info_result}")
-            print("Đang thêm thông tin vào file JSON...")
-            append_disease_to_json(LOCAL_DATASET_PATH, extract_medical_info_result)
-            print("Upload file JSON lên GCS...")
-            upload_json_to_gcs(GCS_BUCKET, GCS_DATASET_PATH, LOCAL_DATASET_PATH)
-
-def mainclient():
-    download_from_gcs()
-    load_faiss_index()
-    image_path = "app/static/img_test/cellulitis.webp"
-    print("File tồn tại:", os.path.exists(image_path))
-    final_labels, result_labels, anomaly_result_labels=process_image(image_path)
-    user_description = collect_user_description()
+def process_pipeline(image_path,diease_name):
+    final_labels=process_image(image_path)
+    print("Chuỗi mô tả bệnh tổng hợp:", final_labels)
+    user_description = generate_description(diease_name)
+    print("Mô tả bệnh từ người dùng :", user_description)
     if not user_description:
         print("\nĐang chọn nhãn dựa trên hình ảnh và mô hình...")
         final_diagnosis = decide_final_label(final_labels)
@@ -693,7 +489,7 @@ def mainclient():
         return
 
     print("\n--- Trả lời các câu hỏi để phân biệt bệnh ---")
-    user_answers = ask_user_questions(questions)
+    user_answers = ask_user_questions(questions,diease_name)
     
     print("\n--- Mô tả bổ sung từ người dùng ---")
     print(user_answers)
@@ -706,13 +502,23 @@ def mainclient():
     refined_labels = result.get("giu_lai", [])
     if not refined_labels:
         print("Không còn nhãn nào phù hợp. Đề xuất tham khảo bác sĩ.")
-    else:
-        print("Các nhãn còn lại sau loại trừ:")
-        for label_info in refined_labels:
-            label = label_info.get("label")
-            ket_qua = "-".join(label.split("-")[1:])
-            suitability = label_info.get("do_phu_hop")
-            print(f"- {ket_qua} (Mức độ phù hợp: {suitability})")
-            search_final(ket_qua)
+    label_names = []
+    for label_info in refined_labels:
+        label = label_info.get("label")
+        ket_qua = "-".join(label.split("-")[1:])  # Cắt phần ID nếu có
+        suitability = label_info.get("do_phu_hop")
+        print(f"- {ket_qua} (Mức độ phù hợp: {suitability})")
+        label_names.append(ket_qua)
+
+    return label_names    
+def mainclient():
+    download_from_gcs()
+    load_faiss_index()
+    all_result=[]
+    result = test_process_pipeline()
+    all_result.append(result)
+    print(result)
+    with open("app/static/test_result.json", "w", encoding="utf-8") as file:
+        json.dump(all_result, file, ensure_ascii=False, indent=4)
 if __name__ == "__main__":
     mainclient()
