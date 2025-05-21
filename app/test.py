@@ -42,24 +42,6 @@ labels = {}
 anomaly_index = None
 anomaly_labels = {}
 
-# --- Hàm upload ảnh lên GCS ---
-def upload_to_gcs(local_path, destination_blob_name):
-    client = storage.Client.from_service_account_json(GCS_KEY_PATH)
-    bucket = client.bucket(GCS_BUCKET)
-    blob = bucket.blob(destination_blob_name)
-    blob.upload_from_filename(local_path)
-    logging.info(f"Đã upload file lên GCS: gs://{GCS_BUCKET}/{destination_blob_name}")
-
-def save_image_from_user(image_bytes, filename):
-    tmp_dir = Path("tmp")
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_path = tmp_dir / filename
-    with open(tmp_path, "wb") as f:
-        f.write(image_bytes)
-    logging.info(f"Lưu ảnh tạm thời thành công: {tmp_path}")
-    upload_to_gcs(str(tmp_path), GCS_IMAGE_PATH + filename)
-    return str(tmp_path)
-
 def preprocess_image(image_path):
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -207,7 +189,6 @@ def process_pipeline(image_path: str):
     if processed_edges is not None:
         processed_path = processed_dir / f"{Path(image_path).stem}_processed.jpg"
         cv2.imwrite(str(processed_path), processed_edges)
-        upload_to_gcs(str(processed_path), GCS_IMAGE_PATH + processed_path.name)
         logging.info(f"Ảnh tiền xử lý đã lưu và upload: {processed_path}")
     else:
         logging.warning("Không tạo được ảnh tiền xử lý.")
