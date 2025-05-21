@@ -404,6 +404,11 @@ def answer_question(question,disease_name):
     except Exception as e:
         print(f"Lỗi khi tổng hợp thông tin: {e}")
         return "Xảy ra lỗi trong quá trình tổng hợp thông tin"
+    
+def clean_image_name(image_name):
+    name = os.path.splitext(image_name)[0]  
+    name = re.sub(r"\(\d+\)", "", name)    
+    return name.strip().lower()
 
        
 def process_image(image_path):
