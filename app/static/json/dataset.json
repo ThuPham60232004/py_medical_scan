@@ -2798,5 +2798,41 @@
         "Thời gian sử dụng": "Theo chỉ định của bác sĩ hoặc hướng dẫn của nhà sản xuất"
       }
     ]
+  },
+  {
+    "Tên bệnh": "Athlete foot",
+    "Tên khoa học": "Athlete foot",
+    "Triệu chứng": "Không tìm thấy",
+    "Vị trí xuất hiện": "Không tìm thấy",
+    "Nguyên nhân": "Không tìm thấy",
+    "Tiêu chí chẩn đoán": "Không tìm thấy",
+    "Chẩn đoán phân biệt": "Không tìm thấy",
+    "Điều trị": "Không tìm thấy",
+    "Phòng bệnh": "Không tìm thấy",
+    "Các loại thuốc": [
+      {
+        "Tên thuốc": "Không tìm thấy",
+        "Liều lượng": "Không tìm thấy",
+        "Thời gian sử dụng": "Không tìm thấy"
+      }
+    ]
+  },
+  {
+    "Tên bệnh": "ringworm",
+    "Tên khoa học": "ringworm",
+    "Triệu chứng": "Không tìm thấy",
+    "Vị trí xuất hiện": "Không tìm thấy",
+    "Nguyên nhân": "Không tìm thấy",
+    "Tiêu chí chẩn đoán": "Không tìm thấy",
+    "Chẩn đoán phân biệt": "Không tìm thấy",
+    "Điều trị": "Không tìm thấy",
+    "Phòng bệnh": "Không tìm thấy",
+    "Các loại thuốc": [
+      {
+        "Tên thuốc": "",
+        "Liều lượng": "",
+        "Thời gian sử dụng": ""
+      }
+    ]
   }
 ]

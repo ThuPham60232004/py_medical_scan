@@ -83,13 +83,7 @@ def download_from_gcs():
         blob.download_to_filename(local_path)
         print(f"Tải về {gcs_path} to {local_path}")
         
-def upload_to_gcs(local_path, destination_blob_name):
-    """Upload file lên Google Cloud Storage."""
-    client = storage.Client.from_service_account_json("app/gsc-key.json")
-    bucket = client.bucket(GCS_BUCKET)
-    blob = bucket.blob(destination_blob_name)
-    blob.upload_from_filename(local_path)
-    print(f"Đã upload {local_path} lên GCS tại: gs://{GCS_BUCKET}/{destination_blob_name}")
+
 
 def preprocess_image(image_path):
     """Tiền xử lý ảnh bằng Gaussian Blur và Canny Edge Detection."""
@@ -421,7 +415,6 @@ def process_image(image_path):
 
         processed_path = processed_dir / f"{Path(image_path).stem}_processed.jpg"
         cv2.imwrite(str(processed_path), processed)
-        upload_to_gcs(str(processed_path), GCS_IMAGE_PATH + str(processed_path.name))
         embedding = embed_image(image_path)
         if embedding is not None:
             result_labels = search_similar_images(embedding)
