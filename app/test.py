@@ -787,7 +787,7 @@ def process_pipeline(image_path,diease_name):
             suitability = label_info.get("do_phu_hop")
             print(f"- {ket_qua} (Mức độ phù hợp: {suitability})")
             search_final(ket_qua)
-            return ket_qua
+        return ket_qua
 
 def get_all_images(directory):
     exts = [".jpg", ".jpeg", ".png", ".bmp"]
