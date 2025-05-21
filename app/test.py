@@ -747,7 +747,7 @@ def generate_description(disease_name: str) -> str:
 
 def process_pipeline(image_path,diease_name):
     final_labels, result_labels, anomaly_result_labels=process_image(image_path)
-    user_description = generate_description()
+    user_description = generate_description(diease_name)
     print("Mô tả từ người dùng:", user_description)
     if not user_description:
         print("\nĐang chọn nhãn dựa trên hình ảnh và mô hình...")
@@ -787,6 +787,7 @@ def process_pipeline(image_path,diease_name):
             suitability = label_info.get("do_phu_hop")
             print(f"- {ket_qua} (Mức độ phù hợp: {suitability})")
             search_final(ket_qua)
+            return ket_qua
 
 def get_all_images(directory):
     exts = [".jpg", ".jpeg", ".png", ".bmp"]

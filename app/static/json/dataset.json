@@ -2780,5 +2780,23 @@
         "Thời gian sử dụng": "Không tìm thấy"
       }
     ]
+  },
+  {
+    "Tên bệnh": "Athlete's Foot (Bệnh nấm da chân)",
+    "Tên khoa học": "Tinea Pedis",
+    "Triệu chứng": "Ngứa, rát, nứt nẻ, đóng vảy da giữa các ngón chân",
+    "Vị trí xuất hiện": "Giữa các ngón chân, da",
+    "Nguyên nhân": "Do nấm gây ra, lây nhiễm từ bề mặt ẩm ướt (như phòng tắm, hồ bơi, sàn phòng thay đồ), tiếp xúc với người bệnh hoặc động vật bị nhiễm nấm.",
+    "Tiêu chí chẩn đoán": "Khám sức khỏe, hỏi về triệu chứng, xét nghiệm da (cấy da)",
+    "Chẩn đoán phân biệt": "Không tìm thấy",
+    "Điều trị": "Kem chống nấm không kê đơn (OTC) cho hầu hết các trường hợp, thuốc kê đơn cho nhiễm trùng nghiêm trọng hơn.",
+    "Phòng bệnh": "Giữ chân sạch sẽ, khô ráo và thoáng mát, đi tất sạch, không đi chân trần ở nơi công cộng, đi dép trong phòng tắm và phòng thay đồ, giữ móng chân sạch và cắt ngắn.",
+    "Các loại thuốc": [
+      {
+        "Tên thuốc": "Kem chống nấm (OTC hoặc kê đơn)",
+        "Liều lượng": "Theo hướng dẫn của nhà sản xuất hoặc chỉ định của bác sĩ",
+        "Thời gian sử dụng": "Theo chỉ định của bác sĩ hoặc hướng dẫn của nhà sản xuất"
+      }
+    ]
   }
 ]
