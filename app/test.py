@@ -766,7 +766,7 @@ def process_pipeline(image_path,diease_name):
         return
 
     print("\n--- Trả lời các câu hỏi để phân biệt bệnh ---")
-    user_answers = ask_user_questions(questions)
+    user_answers = ask_user_questions(questions, diease_name)
     
     print("\n--- Mô tả bổ sung từ người dùng ---")
     print(user_answers)
@@ -852,6 +852,7 @@ def test_process_pipeline():
 def mainclient():
     download_from_gcs()
     load_faiss_index()
+    test_process_pipeline()
     
 if __name__ == "__main__":
     mainclient()
