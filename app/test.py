@@ -399,8 +399,6 @@ def get_all_images(directory):
 
 
     
-
-    
 def clean_image_name(image_name):
     name = os.path.splitext(image_name)[0]  
     name = re.sub(r"\(\d+\)", "", name)    
