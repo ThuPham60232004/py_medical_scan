@@ -444,34 +444,25 @@ def clean_image_name(image_name: str) -> str:
     name = re.sub(r"\(\d+\)", "", name)
     return name.strip().lower()
 
-def process_image(image_data: bytes):
+def process_image(image_data: bytes) -> tuple:
     if not image_data:
         print("Không có dữ liệu ảnh để xử lý.")
         return None, [], [], [], []
     
     print("Đã nhận dữ liệu ảnh, bắt đầu xử lý...")
     
-    # Convert bytes to image for preprocessing
+    # Convert bytes to image for embedding
     nparr = np.frombuffer(image_data, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
         print("Lỗi giải mã ảnh, dừng quy trình.")
         return None, [], [], [], []
 
-    # Save image temporarily for preprocess_image
+    # Save image temporarily for embed_image
     processed_dir = Path("app/static/processed")
     processed_dir.mkdir(parents=True, exist_ok=True)
     temp_image_path = processed_dir / "temp_image.jpg"
     cv2.imwrite(str(temp_image_path), img)
-
-    processed = preprocess_image(str(temp_image_path))
-    print("Đã xử lý ảnh", processed is not None)
-    if processed is None:
-        print("Lỗi xử lý ảnh, dừng quy trình.")
-        return None, [], [], [], []
-
-    processed_path = processed_dir / "processed_temp.jpg"
-    cv2.imwrite(str(processed_path), processed)
 
     embedding = embed_image(str(temp_image_path))
     result_labels_simple = []
@@ -509,9 +500,9 @@ def process_image(image_data: bytes):
     print("final_labels", final_labels)
 
     # Cleanup temporary files
-    for temp_file in [temp_image_path, processed_path, anomaly_map_path]:
+    for temp_file in [temp_image_path, anomaly_map_path]:
         try:
-            if temp_file.exists():
+            if temp_file and temp_file.exists():
                 temp_file.unlink()
         except Exception as e:
             print(f"Lỗi khi xóa file tạm {temp_file}: {e}")
