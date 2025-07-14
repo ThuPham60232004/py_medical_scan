@@ -1,6 +1,8 @@
+from io import BytesIO
 import cv2
 import os
 import numpy as np
+import time
 import torch
 import faiss
 import json
@@ -14,273 +16,127 @@ from huggingface_hub import login
 import timm
 from PIL import Image
 from torchvision import transforms
-from pathlib import Path
 from typing import Optional
 import logging
-from PIL import Image
-import textwrap
 import re
 import requests
 import xml.etree.ElementTree as ET
 from sklearn.metrics.pairwise import cosine_similarity
 from collections import Counter
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# ---------------------- CẤU HÌNH ----------------------
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 load_dotenv()
 login(token=os.getenv("HUGGINGFACE_TOKEN"))
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-GCS_BUCKET = "kltn-2025"
-GCS_IMAGE_PATH = "uploaded_images/"
-GCS_KEY_PATH = storage.Client.from_service_account_json("app/gsc-key.json")
+# ---------------------- CONSTANTS ----------------------
+PROCESSED_DIR = "app/static/processed"
+ANOMALY_MAP_DIR = "app/static/anomaly_maps"
+ROI_OUTPUT_DIR = "app/static/roi_outputs"
+GCS_BUCKET = "group_dataset-nt"
+GCS_FOLDER = "handle_data"
+LOCAL_SAVE_DIR = "app/static/"
 
-VECTOR_FILE = "static/processed/embedded_vectors.json"
-GCS_FOLDER="handle_data"
-GCS_DATASET = f"dataset"
-GCS_DATASET_PATH = f"{GCS_DATASET}/dataset.json"
-GCS_INDEX_PATH = f"{GCS_FOLDER}/faiss_index.bin"
-GCS_LABELS_PATH = f"{GCS_FOLDER}/labels.npy"
-GCS_TEXT_INDEX_PATH = f"{GCS_FOLDER}/faiss_text_index.bin"
-GCS_TEXT_LABELS_PATH = f"{GCS_FOLDER}/text_labels.npy"
-GCS_ANOMALY_INDEX_PATH = f"{GCS_FOLDER}/faiss_index_anomaly.bin"
-GCS_ANOMALY_LABELS_PATH = f"{GCS_FOLDER}/labels_anomaly.npy"
-LOCAL_INDEX_PATH = "app/static/faiss/faiss_index.bin"
-LOCAL_LABELS_PATH = "app/static/labels/labels.npy"
-LOCAL_TEXT_INDEX_PATH = "app/static/faiss/faiss_text_index.bin"
-LOCAL_TEXT_LABELS_PATH = "app/static/labels/text_labels.npy"
-LOCAL_ANOMALY_INDEX_PATH = "app/static/faiss/faiss_index_anomaly.bin"
-LOCAL_ANOMALY_LABELS_PATH = "app/static/labels/labels_anomaly.npy"
-LOCAL_DATASET_PATH = "app/static/json/dataset.json"
-INDEX_DIM = 512  
+REQUIRED_FILES = [
+    "faiss_index.bin",
+    "faiss_index_anomaly.bin",
+    
+    "faiss_index_bacterial_infections.bin",
+    "faiss_index_fungal_infections.bin",
+    "faiss_index_parasitic_infections.bin",
+    "faiss_index_virus.bin",
+    
+    "faiss_index_anomaly_bacterial_infections.bin",
+    "faiss_index_anomaly_fungal_infections.bin",
+    "faiss_index_anomaly_parasitic_infections.bin",
+    "faiss_index_anomaly_virus.bin",
 
-index = None
-labels = []
-anomaly_index = None
-anomaly_labels = []
+    "labels.npy",
+    "labels_anomaly.npy",
+
+    "labels_bacterial_infections.npy",
+    "labels_fungal_infections.npy",
+    "labels_parasitic_infections.npy",
+    "labels_virus.npy",
+
+    "labels_anomaly_bacterial_infections.npy",
+    "labels_anomaly_fungal_infections.npy",
+    "labels_anomaly_parasitic_infections.npy",
+    "labels_anomaly_virus.npy"
+]
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
 vit_model = timm.create_model("vit_base_patch16_224", pretrained=True).to(device)
 vit_model.eval()
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-def download_from_gcs():
-    storage_client = GCS_KEY_PATH
-    bucket = storage_client.bucket(GCS_BUCKET)
 
-    files_to_download = [
-        (GCS_INDEX_PATH, LOCAL_INDEX_PATH),
-        (GCS_LABELS_PATH, LOCAL_LABELS_PATH),
-        (GCS_TEXT_INDEX_PATH, LOCAL_TEXT_INDEX_PATH),
-        (GCS_TEXT_LABELS_PATH, LOCAL_TEXT_LABELS_PATH),
-        (GCS_ANOMALY_INDEX_PATH, LOCAL_ANOMALY_INDEX_PATH),
-        (GCS_ANOMALY_LABELS_PATH, LOCAL_ANOMALY_LABELS_PATH),
-        (GCS_DATASET_PATH, LOCAL_DATASET_PATH),
-    ]
+# ---------------------- GOOGLE CLOUD CLIENT (DÙNG JSON) ----------------------
+def get_gcs_client():
+    try:
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        return storage.Client.from_service_account_json(credentials_path)
+    except Exception as e:
+        logging.error(f"Lỗi tạo Google Cloud Client: {e}")
+        raise
 
-    for gcs_path, local_path in files_to_download:
-        blob = bucket.blob(gcs_path)
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        blob.download_to_filename(local_path)
-        print(f"Tải về {gcs_path} to {local_path}")
-        
-def upload_to_gcs(local_path, destination_blob_name):
-    """Upload file lên Google Cloud Storage."""
-    client = storage.Client.from_service_account_json("app/gsc-key.json")
-    bucket = client.bucket(GCS_BUCKET)
-    blob = bucket.blob(destination_blob_name)
-    blob.upload_from_filename(local_path)
-    print(f"Đã upload {local_path} lên GCS tại: gs://{GCS_BUCKET}/{destination_blob_name}")
+def download_gcs_file(bucket_name: str, source_blob_name: str, destination_file_name: str, retries: int = 5):
+    for attempt in range(1, retries + 1):
+        try:
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(bucket_name)
+            blob = bucket.blob(source_blob_name)
+            blob.download_to_filename(destination_file_name, timeout=120)
+            logging.info(f"Tải thành công {source_blob_name} → {destination_file_name}")
+            return
+        except Exception as e:
+            logging.warning(f"Lỗi tải {source_blob_name} (lần {attempt}/{retries}): {e}")
+            if attempt < retries:
+                wait_time = 5 * attempt
+                logging.info(f"Đợi {wait_time}s trước lần thử lại...")
+                time.sleep(wait_time)
+            else:
+                logging.error(f"Thất bại sau {retries} lần: {source_blob_name}")
 
-def preprocess_image(image_path):
-    """Tiền xử lý ảnh bằng Gaussian Blur và Canny Edge Detection."""
-    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        return None
-    blurred = cv2.GaussianBlur(img, (5, 5), 0)
-    equalized = cv2.equalizeHist(blurred)
-    edges = cv2.Canny(equalized, 50, 150)
-    return edges
+def download_all_required_files():
+    Path(LOCAL_SAVE_DIR).mkdir(parents=True, exist_ok=True)
+    for file in REQUIRED_FILES:
+        gcs_path = f"{GCS_FOLDER}/{file}"
+        local_path = os.path.join(LOCAL_SAVE_DIR, file)
+        download_gcs_file(GCS_BUCKET, gcs_path, local_path)
 
-def embed_image(image_path):
-    """Nhúng ảnh thành vector sử dụng mô hình CLIP."""
+# ---------------------- BƯỚC 1: NHẬN ẢNH ----------------------
+def receive_image_from_path(image_path: str) -> Image.Image:
     image = cv2.imread(image_path)
     if image is None:
-        return None
-    inputs = processor(images=image, return_tensors="pt").to(device)
-    with torch.no_grad():
-        embedding = model.get_image_features(**inputs)
-    return embedding.cpu().numpy().astype(np.float32)
-def generate_anomaly_map(image_path: str) -> Optional[np.ndarray]:
-    """
-    Sinh anomaly map từ ảnh đầu vào bằng ViT feature extractor và resize lại theo kích thước ảnh gốc.
-    """
-    try:
-        img = Image.open(image_path).convert("RGB")
-        original_size = img.size  
-        transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-        ])
-        img_tensor = transform(img).unsqueeze(0).to(device)
+        raise ValueError(f"Không thể đọc ảnh tại: {image_path}")
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(image_rgb)
 
-        with torch.no_grad():
-            features = vit_model.forward_features(img_tensor)  
-        feature_map = features.mean(dim=1).squeeze().cpu().numpy()
-        anomaly_map = (feature_map - np.min(feature_map)) / (np.ptp(feature_map) + 1e-6)
-        anomaly_map = (anomaly_map * 255).astype(np.uint8)
-        anomaly_map_resized = cv2.resize(anomaly_map, original_size, interpolation=cv2.INTER_CUBIC)
+# ---------------------- BƯỚC 2: TIỀN XỬ LÝ ẢNH ----------------------
+def apply_clahe(image):
+    hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+    h, s, v = cv2.split(hsv)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    v_clahe = clahe.apply(v)
+    hsv_clahe = cv2.merge((h, s, v_clahe))
+    return cv2.cvtColor(hsv_clahe, cv2.COLOR_HSV2RGB)
 
-        return anomaly_map_resized
+def preprocess_image(image_path):
+    image = cv2.imread(str(image_path))
+    if image is None:
+        raise ValueError(f"Không thể đọc ảnh: {image_path}")
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image = apply_clahe(image)
+    image = cv2.GaussianBlur(image, (3, 3), 0)
+    return Image.fromarray(image), image
 
-    except Exception as e:
-        print(f"Lỗi tạo Anomaly Map: {e}")
-        return None
-
-def embed_anomaly_map(anomaly_map_path: str):
-    """Nhúng anomaly map thành vector sử dụng mô hình CLIP."""
-    anomaly_map = cv2.imread(anomaly_map_path, cv2.IMREAD_GRAYSCALE)
-    if anomaly_map is None:
-        return None
-    anomaly_map_rgb = cv2.cvtColor(anomaly_map, cv2.COLOR_GRAY2RGB)
-    inputs = processor(images=anomaly_map_rgb, return_tensors="pt").to(device)
-    
-    with torch.no_grad():
-        embedding = model.get_image_features(**inputs)
-
-    return embedding.cpu().numpy().astype(np.float32)
-def load_faiss_index():
-    """Tải FAISS Index và nhãn bệnh từ file."""
-    global index, labels,anomaly_index,anomaly_labels
-    if os.path.exists(LOCAL_INDEX_PATH):
-        try:
-            index = faiss.read_index(LOCAL_INDEX_PATH)
-            print(f"FAISS Index tải thành công! Tổng số vector: {index.ntotal}")
-        except Exception as e:
-            print(f"Lỗi tải FAISS Index: {e}")
-            index = None
-    else:
-        print("FAISS Index không tồn tại!")
-
-    if os.path.exists(LOCAL_TEXT_LABELS_PATH):
-        labels = np.load(LOCAL_TEXT_LABELS_PATH, allow_pickle=True).tolist()
-        print(f"Đã tải {len(labels)} nhãn bệnh từ labels.npy")
-    else:
-        print("labels.npy không tồn tại!")
-        
-    if os.path.exists(LOCAL_ANOMALY_INDEX_PATH):
-        try:
-            anomaly_index = faiss.read_index(LOCAL_ANOMALY_INDEX_PATH)
-            print(f"FAISS Anomaly Index tải thành công! Tổng số vector: {anomaly_index.ntotal}")
-        except Exception as e:
-            print(f"Lỗi tải FAISS Anomaly Index: {e}")
-            anomaly_index = None
-    else:
-        print("FAISS Anomaly Index không tồn tại!")
-    if os.path.exists(LOCAL_ANOMALY_LABELS_PATH):
-        anomaly_labels = np.load(LOCAL_ANOMALY_LABELS_PATH, allow_pickle=True).tolist()
-        print(f"Đã tải {len(anomaly_labels)} nhãn bệnh từ labels-anomaly.npy")
-    else:
-        print("labels-anomaly.npy không tồn tại!")
-
-def search_similar_images(query_vector, top_k=5):
-    """Tìm ảnh tương tự bằng FAISS Index."""
-    if index is None or index.ntotal == 0:
-        print("FAISS index trống!")
-        return []
-
-    distances, indices = index.search(query_vector, top_k)
-    print(f"Chỉ số tìm thấy: {indices}")
-    similar_labels = []
-    
-    for i in indices[0]:
-        if 0 <= i < len(labels):
-            label_filename = list(labels.keys())[i]
-            similar_labels.append(labels[label_filename])
-        else:
-            print(f"Index {i} vượt phạm vi labels ({len(labels)})!")
-            similar_labels.append("unknown")
-
-    return similar_labels
-def search_anomaly_images(query_vector, top_k=5):
-    """Tìm ảnh anomaly map tương tự bằng FAISS Index."""
-    if anomaly_index is None or anomaly_index.ntotal == 0:
-        print("FAISS Anomaly Index trống!")
-        return []
-    distances, indices = anomaly_index.search(query_vector, top_k)
-    print(f"Chỉ số tìm thấy: {indices}")
-    similar_labels = []
-    
-    for i in indices[0]:
-        if 0 <= i < len(anomaly_labels):
-            label_filename = list(anomaly_labels.keys())[i]
-            similar_labels.append(anomaly_labels[label_filename])
-        else:
-            print(f"Index {i} vượt phạm vi labels-anomaly ({len(anomaly_labels)})!")
-            similar_labels.append("unknown")
-
-    return similar_labels
-VALID_KEYWORDS = {
-    "location": ["tay", "chân", "đầu gối", "cổ tay", "bụng", "lưng", "mặt", "cổ", "ngực"],
-    "duration": ["ngày", "tuần", "tháng", "năm", "hôm nay", "hôm qua", "vài ngày", "lâu rồi", 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    "appearance": ["đỏ", "sưng", "mưng mủ", "mụn", "nổi mẩn", "tróc vảy", "thâm"],
-    "feeling": ["ngứa", "đau", "rát", "nhức", "khó chịu"],
-    "spreading": ["có", "không"],
-}
-
-def extract_keywords(text, field):
-    if not isinstance(text, str):
-        text = str(text)
-    keywords = {
-        "location": ["tay", "chân", "đầu gối", "cổ tay", "ngón", "mặt", "bụng", "lưng"],
-        "duration": ["ngày", "tuần", "tháng", "năm"],
-        "appearance": ["đỏ", "sưng", "mụn", "loét", "nổi cục", "vàng", "trắng"],
-        "feeling": ["ngứa", "đau", "rát", "khó chịu"],
-        "spreading": ["có", "không"]
-    }
-    matched = [word for word in keywords.get(field, []) if word in text.lower()]
-    return ", ".join(matched) if matched else text
-
-def collect_user_description():
-    print("Thu thập mô tả của bệnh nhân (hoặc nhấn Enter để bỏ qua):\n")
-    try:
-        print("Bắt đầu thu thập mô tả bệnh, bệnh nhân vui lòng trả lời các câu hỏi sau:")
-        location = input("Cho mình hỏi bạn, bạn có thể cho biết vị trí của bệnh không? (Ví dụ: đầu gối, cổ tay,...)\n")
-        duration = input("Thời gian bạn bị bệnh là bao lâu rồi? (Ví dụ: 1 tuần, 2 tháng,...)\n")
-        appearance = input("Hình dạng của bệnh như thế nào? (Ví dụ: đỏ, sưng,...)\n")
-        feeling = input("Bạn cảm thấy như thế nào? (Ví dụ: đau, ngứa,...)\n")
-        spreading = input("Bệnh có lan rộng không? (Ví dụ: có, không)\n")
-        location = extract_keywords(location, "location")
-        duration = extract_keywords(duration, "duration")
-        appearance = extract_keywords(appearance, "appearance")
-        feeling = extract_keywords(feeling, "feeling")
-        spreading = extract_keywords(spreading, "spreading")
-
-        description = (
-            f"Triệu chứng xuất hiện ở {location}, đã kéo dài {duration}. "
-            f"Vùng da có biểu hiện {appearance} và cảm giác {feeling}. "
-            f"Triệu chứng: {spreading} lan rộng.")
-        print("Đây là mô tả bệnh bạn đã cung cấp:\n")
-        print(description)
-
-        confirm = input("Bạn có muốn xác nhận mô tả này không? (y/n): ").strip().lower()
-        if confirm == 'y':
-            print("Mô tả bệnh của bạn đã được ghi nhận")
-            return description
-        else:
-            retry = input("Bạn muốn nhập lại mô tả bệnh? (y/n): ").strip().lower()
-            if retry == 'y':
-                return collect_user_description()
-            else:
-                print("Mô tả bệnh đã bị bỏ qua.")
-                return None
-    except Exception as e:
-        print(f"Lỗi thu thập mô tả: {e}")
-        return None
-
-def generate_description_with_Gemini(image_path):
+# ---------------------- BƯỚC 3: SINH MÔ TẢ BẰNG GEMINI ----------------------
+def generate_description_with_Gemini(image_path: str) -> Optional[str]:
     try:
         img = Image.open(image_path)
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         prompt = """
         Mô tả bức ảnh này bằng tiếng Việt, đây là ảnh y khoa nên hãy mô tả thật kỹ.
         Chỉ tập trung vào mô tả lâm sàng, không đưa ra chẩn đoán hay kết luận.
@@ -294,425 +150,319 @@ def generate_description_with_Gemini(image_path):
         - Phân bố (rải rác, tập trung thành đám, theo đường…)
         - Các đặc điểm bất thường khác nếu có (chảy máu, vảy, mụn nước, sưng nề…)
         Chỉ mô tả những gì có thể nhìn thấy trong ảnh, không đưa ra giả định hay chẩn đoán y khoa.
-        Xóa mark down và các ký tự đặc biệt trong kết quả.
+        Xóa markdown và các ký tự đặc biệt trong kết quả.
         """
         response = model.generate_content([prompt, img])
-        caption = response.text.replace("\n", " ")
+        caption = response.text.replace("\n", " ").strip()
         return caption
     except Exception as e:
-        print(f"Lỗi khi tạo caption với Gemini: {e}")
+        logging.error(f"Lỗi khi tạo caption với Gemini: {e}")
         return None
-def combine_labels(normal_labels: list, anomaly_labels: list) -> str:
+def generate_anomaly_overlay(image_pil):
+    image_resized = image_pil.resize((224, 224))
+    image_np = np.array(image_resized).astype(np.float32) / 255.0
+    image_np = (image_np - 0.5) / 0.5
+    image_tensor = torch.tensor(image_np.transpose(2, 0, 1)).unsqueeze(0).float().to(device)
+
+    with torch.no_grad():
+        features = vit_model.forward_features(image_tensor)
+
+    anomaly_map = features[0].norm(dim=0).cpu().numpy()
+    anomaly_map = (anomaly_map - anomaly_map.min()) / (anomaly_map.max() - anomaly_map.min() + 1e-8)
+    anomaly_map = (anomaly_map * 255).astype(np.uint8)
+
+    anomaly_map_resized = cv2.resize(anomaly_map, image_pil.size[::-1])
+    anomaly_map_blur = cv2.GaussianBlur(anomaly_map_resized, (5, 5), 0)
+    heatmap = cv2.applyColorMap(anomaly_map_blur, cv2.COLORMAP_JET)
+
+    image_cv = np.array(image_pil)
+    if heatmap.shape[:2] != image_cv.shape[:2]:
+        heatmap = cv2.resize(heatmap, (image_cv.shape[1], image_cv.shape[0]))
+
+    if image_cv.shape[2] == 3:
+        original = cv2.cvtColor(image_cv, cv2.COLOR_RGB2BGR)
+    else:
+        original = image_cv
+
+    overlay = cv2.addWeighted(original, 0.6, heatmap, 0.4, 0)
+    return overlay, anomaly_map_blur
+# ---------------------- PHÂN LOẠI ẢNH THƯỜNG (FULL IMAGE) ----------------------
+def embed_image_clip(image_pil: Image.Image) -> np.ndarray:
+    inputs = processor(images=image_pil, return_tensors="pt").to(device)
+    with torch.no_grad():
+        outputs = model.get_image_features(**inputs)
+    image_embedding = outputs.cpu().numpy().astype("float32")
+    return image_embedding
+
+def search_faiss_index(embedding: np.ndarray, index_path: str, label_path: str, top_k: int = 5):
+    index = faiss.read_index(index_path)
+    labels = np.load(label_path, allow_pickle=True)
+    distances, indices = index.search(embedding, top_k)
+    top_labels = [labels[idx] for idx in indices[0]]
+    return list(zip(top_labels, distances[0]))
+
+# ---------------------- PHÂN TÍCH BẤT THƯỜNG (ANOMALY PIPELINE) ----------------------
+def save_anomaly_outputs(anomaly_overlay, anomaly_map, image_path: str):
+    basename = Path(image_path).stem
+    roi_output_path = os.path.join(ROI_OUTPUT_DIR, f"{basename}_overlay.jpg")
+    anomaly_map_path = os.path.join(ANOMALY_MAP_DIR, f"{basename}_anomaly.jpg")
+
+    os.makedirs(ROI_OUTPUT_DIR, exist_ok=True)
+    os.makedirs(ANOMALY_MAP_DIR, exist_ok=True)
+
+    cv2.imwrite(roi_output_path, anomaly_overlay)
+    cv2.imwrite(anomaly_map_path, anomaly_map)
+
+    return roi_output_path, anomaly_map_path
+
+def embed_anomaly_heatmap(heatmap_path: str) -> np.ndarray:
+    image = Image.open(heatmap_path).convert("RGB")
+    return embed_image_clip(image)
+
+def search_faiss_anomaly_index(embedding: np.ndarray, index_path: str, label_path: str, top_k: int = 5):
+    return search_faiss_index(embedding, index_path, label_path, top_k)
+def normalize_group_name(group_name: str) -> str:
     """
-    Gộp danh sách nhãn từ ảnh gốc và ảnh anomaly thành một chuỗi mô tả duy nhất, cách nhau bằng dấu cách.
-    Args:
-        normal_labels (list): Các nhãn từ ảnh gốc.
-        anomaly_labels (list): Các nhãn từ anomaly map.
-    Returns:
-        str: Chuỗi mô tả tổng hợp sau chuẩn hóa, mỗi nhãn cách nhau một dấu cách.
+    Chuẩn hoá tên nhóm bệnh:
+    - Chuyển thành chữ thường
+    - Xoá khoảng trắng dư thừa
+    - Thay khoảng trắng bằng dấu gạch dưới
+    - Loại bỏ ký tự đặc biệt nếu cần (nếu tên nhóm có dấu chấm, dấu ngoặc,...)
+
+    Ví dụ: 'Fungal infections' → 'fungal_infections'
     """
-    all_labels = normal_labels + anomaly_labels
+    group_name = group_name.lower()
+    group_name = group_name.strip()
+    group_name = re.sub(r"\s+", "_", group_name)         
+    group_name = re.sub(r"[^a-z0-9_]", "", group_name)     
+    return group_name
 
-    return " ".join(all_labels).strip()
+def aggregate_combined_results(combined_results):
+    score_dict = {}
+    for label, distance in combined_results:
+        sim = 1 / (1 + distance)
+        score_dict[label] = score_dict.get(label, 0) + sim
+
+    total_score = sum(score_dict.values())
+    normalized_scores = {label: (score / total_score) * 100 for label, score in score_dict.items()}
+    sorted_scores = sorted(normalized_scores.items(), key=lambda x: x[1], reverse=True)
+    return sorted_scores
 
 
-def generate_medical_entities(image_caption, user_description):
-    combined_description = f"1. Mô tả từ người dùng: {user_description}. 2. Mô tả từ ảnh: {image_caption}."
-    print(combined_description)
+def generate_discriminative_questions(caption: str, labels: list[str], model=None) -> list[str]:
+    if model is None:
+        model = genai.GenerativeModel("gemini-2.5-pro")
 
-    prompt = textwrap.dedent(f"""
-        Tôi có 2 đoạn mô tả sau về một vùng da bị bất thường: {combined_description}
-        Hãy chuẩn hóa cả hai mô tả, loại bỏ từ dư thừa, hợp nhất lại, và trích xuất các đặc trưng y khoa quan trọng.
-        Mỗi đặc trưng nên được gắn nhãn thuộc một trong ba loại sau:
-        - "Triệu chứng": mô tả biểu hiện, dấu hiệu lâm sàng (ví dụ: phát ban, ngứa, đỏ, bong tróc…)
-        - "Vị trí xuất hiện": vùng cơ thể bị ảnh hưởng (ví dụ: mu bàn tay, cẳng chân, ngón tay…)
-        - "Nguyên nhân": yếu tố gây ra tình trạng đó nếu có xuất hiện trong mô tả (ví dụ: côn trùng cắn, dị ứng, tiếp xúc hóa chất…)
-        Trả về kết quả dạng JSON Array. Mỗi phần tử là một object gồm:
-        - "entity": cụm từ y khoa
-        - "type": "Triệu chứng", "Vị trí xuất hiện", hoặc "Nguyên nhân"
-        Ví dụ đầu ra:
-        [
-          {{ "entity": "vết đỏ", "type": "Triệu chứng" }},
-          {{ "entity": "cẳng chân", "type": "Vị trí xuất hiện" }},
-          {{ "entity": "dị ứng thời tiết", "type": "Nguyên nhân" }}
-        ]
-        Chỉ liệt kê các đặc trưng có trong mô tả. Không suy luận thêm.
-    """)
-    try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        response = model.generate_content([prompt])
-        text = response.text.strip()
-        clean_text = re.sub(r"```(?:json)?|```", "", text).strip()
-        result = json.loads(clean_text)
-        decoded_result = json.dumps(result, ensure_ascii=False)
-        return decoded_result 
-
-    except Exception as e:
-        print(f"Lỗi khi tạo mô tả với Gemini: {e}")
-        return None
- 
-def compare_descriptions_and_labels(description, label):
-
-    prompt = textwrap.dedent(f"""
-        Mô tả: "{description}"
-        Nhãn: "{label}"
-        So sánh sự khác biệt giữa mô tả và nhãn bệnh. Sau đó, tạo ra 3 câu hỏi giúp phân biệt chính xác hơn.
-        Trả về kết quả theo định dạng:
-        1. ...
-        2. ...
-        3. ...
-    """)
-
-    try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        response = model.generate_content([prompt])
-        text = response.text.strip()
-        questions = re.findall(r"\d+\.\s+(.*)", text)
-        return questions
-    except Exception as e:
-        print(f"Lỗi khi gọi Gemini: {e}")
-        return []
-def ask_user_questions(questions):
-    answers = []
-    for idx, q in enumerate(questions, 1):
-        print(f"Câu {idx}: {q}")
-        answer = input("Trả lời của bạn: ")
-        answers.append(f"Câu hỏi: {q}\nTrả lời: {answer}")
-    return "\n\n".join(answers)
-       
-def process_image(image_path):
-    """Xử lý ảnh đầu vào, tạo Anomaly Map và nhúng Anomaly Map, tìm kiếm nhãn bệnh."""
-    processed = preprocess_image(image_path)
-    anomaly_map = generate_anomaly_map(image_path)
-    if processed is not None:
-        processed_dir = Path("app/static/processed")
-        processed_dir.mkdir(parents=True, exist_ok=True)
-
-        processed_path = processed_dir / f"{Path(image_path).stem}_processed.jpg"
-        cv2.imwrite(str(processed_path), processed)
-        upload_to_gcs(str(processed_path), GCS_IMAGE_PATH + str(processed_path.name))
-        embedding = embed_image(image_path)
-        if embedding is not None:
-            result_labels = search_similar_images(embedding)
-            print("Kết quả tìm kiếm ảnh tương tự:", result_labels)
-
-        anomaly_map = generate_anomaly_map(image_path)
-        if anomaly_map is not None:
-            anomaly_map_path = processed_dir / f"{Path(image_path).stem}_anomaly_map.jpg"
-            cv2.imwrite(str(anomaly_map_path), anomaly_map)
-            anomaly_map_embedding = embed_anomaly_map(str(anomaly_map_path))
-            if anomaly_map_embedding is not None:
-                anomaly_result_labels = search_similar_images(anomaly_map_embedding)
-                print("Kết quả tìm kiếm từ Anomaly Map:", anomaly_result_labels)
-    final_labels = combine_labels(result_labels, anomaly_result_labels)
-    print("Chuỗi mô tả bệnh tổng hợp:", final_labels)
-    return final_labels, result_labels, anomaly_result_labels
-
-def filter_incorrect_labels_by_user_description(description: str, labels: list[str]) -> str:
-    prompt = textwrap.dedent(f"""
-        Mô tả bệnh của người dùng: "{description}"
-        Danh sách các nhãn bệnh nghi ngờ: [{labels}]
-
-        Nhiệm vụ:
-        1. Phân tích mô tả và so sánh với từng nhãn bệnh.
-        2. Loại bỏ các nhãn bệnh không phù hợp với mô tả. Giải thích lý do loại bỏ rõ ràng.
-        3. Giữ lại các nhãn phù hợp nhất, sắp xếp theo mức độ phù hợp giảm dần.
-
-        Kết quả đầu ra phải ở định dạng JSON:
-        {{
-            "loai_bo": [{{"label": "nhãn không phù hợp", "ly_do": "..."}}],
-            "giu_lai": [{{"label": "nhãn phù hợp", "do_phu_hop": "cao/trung bình/thấp"}}]
-        }}
-    """)
-
-    try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        response = model.generate_content([prompt])
-        text = response.text.strip()
-        clean_text = re.sub(r"```(?:json)?|```", "", text).strip()
-        result = json.loads(clean_text)
-        return result 
-
-    except Exception as e:
-        print(f"Lỗi khi tạo mô tả với Gemini: {e}")
-        return None
-
-def upload_json_to_gcs(bucket_name: str, destination_blob_name: str, source_file_name: str):
-    client = storage.Client.from_service_account_json("app/gsc-key.json")
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(destination_blob_name)
-    blob.upload_from_filename(source_file_name)
-    print(f"Uploaded {source_file_name} to {destination_blob_name}.")
-    
-def append_disease_to_json(file_path: str, new_disease: dict):
-    with open(file_path, 'r+', encoding='utf-8') as f:
-        try:
-            data = json.load(f)
-        except json.JSONDecodeError:
-            data = []
-        data.append(new_disease)
-        f.seek(0)
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.truncate()
-    print(f"Added new disease: {new_disease.get('name', '')}")
-def search_disease_in_json(file_path: str, disease_name: str):
-    with open(file_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-
-    if not isinstance(data, list):
-        print("File JSON không phải là danh sách.")
-        return []
-
-    results = [
-        entry for entry in data
-        if isinstance(entry, dict) and disease_name.lower() in entry.get("Tên bệnh", "").lower()
-    ]
-    return results
-def generate_keyword(keyword):
     prompt = f"""
-    Bạn  là một người có kiến thức sâu rộng về y khoa dựa vào keyword được truyền vào.
-    Keyword là tên bệnh tôi cần bạn tạo ra danh sách tên bệnh liên quan đến keyword đó.
-    Ví dụ tên bệnh là: Squamouscell thì bạn có thể liệt kê các keyword liên quan đến tên như: Squamouse, Squamouse cell, Squamouse Cancer,..
-    Tối đa  là 10 từ khóa liên quan đến tên bệnh đó.
-    Trả về dưới dạng json với cấu trúc như sau:
-    ```json
-    {{
-        "keyword": [
-            "keyword1",
-            "keyword2",
-            "keyword3",
-            "keyword4",
-            "keyword5",
-            "keyword6",
-            "keyword7",
-            "keyword8",
-            "keyword9",
-            "keyword10"
-        ]
-    }}
-    ```
-    """
+Bạn là bác sĩ da liễu. Tôi có ảnh da liễu với mô tả sau:
+
+--- MÔ TẢ ẢNH ---
+{caption}
+
+Tôi đang phân vân giữa các bệnh sau: {', '.join(labels)}.
+
+Hãy đưa ra 3 câu hỏi phân biệt giúp xác định đúng bệnh.  
+- Câu hỏi cần dễ hiểu, trực tiếp, liên quan đến triệu chứng đặc trưng.  
+- **Xưng hô trung lập, dùng “bạn” để hỏi.**  
+- Không được dùng từ như "bé", "em bé", "bệnh nhân", "anh/chị", "người bệnh", v.v.
+
+Chỉ cần liệt kê 3 câu hỏi bằng tiếng Việt, không giải thích thêm.
+"""
     try:
-        if not keyword:
-            return "Không có từ khóa truyền vào"
-        model = genai.GenerativeModel("gemini-2.0-flash")
         response = model.generate_content(prompt)
-        result = response.text.strip()
-        result = re.sub(r"^(?:\w+)?\n|\n$", "", result).strip()
-        
-        if not result:
-            return "Không có thông tin"
-        return result
+        raw_text = response.text.strip()
+        questions = [q.strip(" -0123456789.") for q in raw_text.split("\n") if q.strip()]
+        return questions[:3]
     except Exception as e:
-        print(f"Lỗi khi tạo từ khóa: {e}")
-        return "Xảy ra lỗi trong quá trình tạo từ khóa"
-    
-def search_medlineplus(ten_khoa_hoc):
-    if not ten_khoa_hoc or ten_khoa_hoc == "Không tìm thấy":
-        return "Không có tên bệnh truyền vào"
-    print(f"Tìm kiếm thông tin bệnh '{ten_khoa_hoc}' trên MedLinePlus...")
-    keyword = generate_keyword(ten_khoa_hoc)
+        logging.error(f"Lỗi sinh câu hỏi phân biệt: {e}")
+        return []
+def select_final_diagnosis_with_llm(
+    caption: str,
+    labels: list[str],
+    questions: list[str],
+    answers: list[str],
+    model=None
+) -> str:
+    if model is None:
+        model = genai.GenerativeModel("gemini-2.5-pro")
 
-    url = 'https://wsearch.nlm.nih.gov/ws/query'
-    params = {
-        'db': 'healthTopics',
-        'term': f'{ten_khoa_hoc}'
-    }
-    response = requests.get(url, params=params)
-    if response.status_code == 200:
-        print("Tìm kiếm thành công!")
+    qa_text = "\n".join(
+        [f"- {q}\n  → {a}" for q, a in zip(questions, answers)]
+    )
 
-        cleaned_content = clean_xml_content(response.content)
-        print (cleaned_content)
-        return cleaned_content
-    
-    for item in keyword.get("keyword"):
-        print(f"Tìm kiếm thông tin bệnh '{item}' trên MedLinePlus...")
-        params = {
-            'db': 'healthTopics',
-            'term': f'{item}'
-        }
-        response = requests.get(url, params=params)
-        if response.status_code == 200:
-            print("Tìm kiếm thành công!")
-            cleaned_content = clean_xml_content(response.content)
-            return cleaned_content
-    return None
-def clean_xml_content(xml_content: str) -> str:
-    """
-    Nhận vào một chuỗi XML, trích xuất và kết hợp nội dung văn bản từ tất cả các phần tử.
+    prompt = f"""
+Bạn là bác sĩ da liễu. Dưới đây là mô tả ảnh tổn thương da, danh sách bệnh nghi ngờ và các thông tin phân biệt thu được từ người bệnh.
 
-    Args:
-        xml_content (str): Chuỗi XML đầu vào.
+--- MÔ TẢ ẢNH ---
+{caption}
 
-    Returns:
-        str: Văn bản được trích xuất và làm sạch từ XML.
-    """
+--- CÁC BỆNH NGHI NGỜ ---
+{', '.join(labels)}
+
+--- CÂU TRẢ LỜI PHÂN BIỆT ---
+{qa_text}
+
+Dựa vào tất cả thông tin trên, hãy chọn ra bệnh hợp lý nhất từ danh sách bệnh nghi ngờ.  
+**Chỉ trả lời tên bệnh chính xác duy nhất (không giải thích thêm).**
+"""
     try:
-        root = ET.fromstring(xml_content)
-        text_nodes = [elem.text.strip() for elem in root.iter() if elem.text and elem.text.strip()]
-        return ' '.join(text_nodes)
-
-    except ET.ParseError as e:
-        print(f"Lỗi phân tích XML: {e}")
+        response = model.generate_content(prompt)
+        return response.text.strip().split("\n")[0]
+    except Exception as e:
+        logging.error(f"Lỗi chọn nhãn cuối bằng Gemini: {e}")
         return ""
-    
-def decide_final_label(label_string):
-    labels = label_string.split()
-    processed_labels = [label.split('-', 1)[1] if '-' in label else label for label in labels]
-    counter = Counter(processed_labels)
-    most_common_two = counter.most_common(1)
-    return most_common_two[0][0]
 
-def extract_medical_info(text):
-    prompt = f"""
-    Dịch văn bản về tiếng việt
-    Bạn là một chuyên gia y tế, bạn có khả năng trích xuất thông tin y khoa từ văn bản.
-    Hãy trích xuất thông tin y khoa từ văn bản dưới dạng JSON hợp lệ **không chứa Markdown**.
-    Chỉ lấy kết quả đầu tiên mà bạn tìm được
-    Hãy trích xuất thật chi tiết
+def detailed_group_analysis(image_vector: np.ndarray, anomaly_vector: np.ndarray, group_name: str, top_k: int = 5):
+    print(f"\nSo sánh trong nhóm bệnh: {group_name}")
+    index_path_full = os.path.join(LOCAL_SAVE_DIR, f"faiss_index_{group_name}.bin")
+    label_path_full = os.path.join(LOCAL_SAVE_DIR, f"labels_{group_name}.npy")
 
-    Văn bản đầu vào là:
-    {text}
-    {{
-        "Tên bệnh":"", Tên bệnh là tên của bệnh được ghi ở đầu tiêu đề
-        "Tên khoa học": "", Tên khoa học thường được ghi bằng tiếng anh hoặc tiếng latinh, nếu không thấy thì tên khoa học sẽ bằng tên bệnh nhưng chỉ lấy phần tiếng anh
-        "Triệu chứng": "", Triệu chứng là những dấu hiệu mà bệnh nhân có thể gặp phải khi mắc bệnh này, nếu không tìm thấy thì có thể đổi từ tên bệnh sang tiếng anh
-        "Vị trí xuất hiện": "", Vị trí xuất hiện là nơi mà bệnh này có thể xảy ra trên cơ thể người,
-        "Nguyên nhân": "",  Nguyên nhân là lý do mà bệnh này xảy ra
-        "Tiêu chí chẩn đoán": "",  Tiêu chí chẩn đoán là những tiêu chí mà bác sĩ có thể sử dụng để xác định bệnh này
-        "Chẩn đoán phân biệt": "",  Chẩn đoán phân biệt là những bệnh khác mà bác sĩ có thể xem xét khi xác định bệnh này
-        "Điều trị": "",  Điều trị là những phương pháp mà bác sĩ có thể sử dụng để điều trị bệnh này
-        "Phòng bệnh": "" , Phòng bệnh là những biện pháp mà bác sĩ có thể khuyên bệnh nhân thực hiện để ngăn ngừa bệnh này
-        "Các loại thuốc":
-        [{{
-            "Tên thuốc": "", 
-            "Liều lượng": "", 
-            "Thời gian sử dụng": ""
-        }}]
-    }}
+    index_path_anomaly = os.path.join(LOCAL_SAVE_DIR, f"faiss_index_anomaly_{group_name}.bin")
+    label_path_anomaly = os.path.join(LOCAL_SAVE_DIR, f"labels_anomaly_{group_name}.npy")
 
-    - Nếu không có thông tin, đặt giá trị "Không tìm thấy".
-    - Không thêm giải thích, không in Markdown, không thêm ký tự thừa.
-    """
+    print(f"\nKết quả so khớp ảnh thường với {group_name}:")
+    full_group_results = search_faiss_index(
+        embedding=image_vector,
+        index_path=index_path_full,
+        label_path=label_path_full,
+        top_k=top_k
+    )
+    for label, score in full_group_results:
+        similarity = 1 / (1 + score)
+        print(f"  → {label} (similarity: {similarity*100:.2f}%)")
 
-    try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content(prompt)
-        raw_text = response.text if hasattr(response, "text") else response.parts[0].text
-        raw_text = re.sub(r"^```json\n|\n```$", "", raw_text)
-        extracted_info = json.loads(raw_text)
-        completed_info = clean_text_json(extracted_info)
-        return completed_info
+    print(f"\nKết quả so khớp anomaly heatmap với {group_name}:")
+    anomaly_group_results = search_faiss_index(
+        embedding=anomaly_vector,
+        index_path=index_path_anomaly,
+        label_path=label_path_anomaly,
+        top_k=top_k
+    )
+    for label, score in anomaly_group_results:
+        similarity = 1 / (1 + score)
+        print(f"  → {label} (similarity: {similarity*100:.2f}%)")
 
-    except json.JSONDecodeError:
-        print("Lỗi: Không thể parse JSON từ Gemini.")
-        return {}
-    except Exception as e:
-        print(f"Lỗi trích xuất thông tin y khoa: {e}")
-        return {}
-    
-def clean_text(text: str) -> str:
-    """Làm sạch một chuỗi văn bản."""
-    if not isinstance(text, str):
-        return text
-    text = re.sub(r'[\\\n\r\t\*\]]', ' ', text)
-    text = re.sub(r'\s+', ' ', text) 
-    return text.strip()
-   
-def clean_text_json(data):
-    """Làm sạch toàn bộ văn bản trong một cấu trúc JSON."""
-    if isinstance(data, dict):
-        return {key: clean_text_json(value) for key, value in data.items()}
-    elif isinstance(data, list):
-        return [clean_text_json(item) for item in data]
-    else:
-        return clean_text(data)
-def translate_disease_name(disease_name):
-    prompt=f"""Bạn là một chuyên gia y tế có hiểu biết sâu rộng về y khoa.
-    Bạn có khả năng dịch tên bệnh từ tiếng anh sang tiếng việt.
-    Tên bệnh được truyền vào là: {disease_name}
-    Hãy dịch tên bệnh đó sang tiếng việt.
-    Trả về tên bệnh đóđó
-    """
-    try:
-        if(not disease_name):
-            return "Không có tên bệnh truyền vào"
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content(prompt)
-        result = response.text.strip()
-        result = re.sub(r"^(?:\w+)?\n|\n$", "", result).strip()
+    # ========== GỘP NHÃN VÀ VOTING ==========
+    print(f"\nGộp nhãn từ 2 pipeline (ảnh thường + anomaly) trong nhóm '{group_name}':")
 
-        if not result:
-            return "Chúng tôi không thể dịch tên bệnh này"
-        return result
-    except Exception as e:
-        print(f"Lỗi khi dịch tên bệnh: {e}")
-        return "Xảy ra lỗi trong quá trình dịch tên bệnh"
-def search_final(name):
-    translate_name=translate_disease_name(name)
-    print(f"Tên bệnh đã dịch: {translate_name}")
-    search_json_result = search_disease_in_json(LOCAL_DATASET_PATH, translate_name)
-    if search_json_result:
-        print(f"Kết quả tìm kiếm trong file JSON: {search_json_result}")
-    else:
-        print(f"Không tìm thấy tên bệnh '{translate_name}' trong file JSON.")
-        print ("Bắt đầu tìm kiếm bằng MedlinePlus...")
-        search_medline_result = search_medlineplus(name)
-        print(f"Kết quả tìm kiếm MedlinePlus: {search_medline_result}")
-        print ("Bắt đầu trích xuất thông tin y khoa từ MedlinePlus...")
-        extract_medical_info_result = extract_medical_info(search_medline_result)
-        if extract_medical_info_result:
-            print(f"Kết quả trích xuất thông tin y khoa: {extract_medical_info_result}")
-            print("Đang thêm thông tin vào file JSON...")
-            append_disease_to_json(LOCAL_DATASET_PATH, extract_medical_info_result)
-            print("Upload file JSON lên GCS...")
-            upload_json_to_gcs(GCS_BUCKET, GCS_DATASET_PATH, LOCAL_DATASET_PATH)
+    combined_results = full_group_results + anomaly_group_results
 
-def mainclient():
-    download_from_gcs()
-    load_faiss_index()
-    image_path = "app/static/img_test/cellulitis.webp"
-    print("File tồn tại:", os.path.exists(image_path))
-    final_labels, result_labels, anomaly_result_labels=process_image(image_path)
-    user_description = collect_user_description()
-    if not user_description:
-        print("\nĐang chọn nhãn dựa trên hình ảnh và mô hình...")
-        final_diagnosis = decide_final_label(final_labels)
-        print(f"\nKết quả sơ bộ: {final_diagnosis}")
-        print("Thông báo: Vì bạn không cung cấp mô tả, kết quả có thể chưa chính xác.")
-        return
-    image_description = generate_description_with_Gemini(image_path)
-    print("Mô tả từ ảnh (Gemini):", image_description)
-    result_medical_entities = generate_medical_entities(user_description, image_description)
-    print(result_medical_entities)
-    questions = compare_descriptions_and_labels(result_medical_entities, final_labels)
-    print(final_labels)
+    # Tính điểm similarity
+    label_scores_raw = {}
+    for label, distance in combined_results:
+        similarity = 1 / (1 + distance)
+        label_scores_raw[label] = label_scores_raw.get(label, 0) + similarity
+
+    # Chuẩn hóa thành phần trăm
+    total_similarity = sum(label_scores_raw.values())
+    label_scores_percent = {label: (score / total_similarity) * 100 for label, score in label_scores_raw.items()}
+
+    # Sắp xếp theo similarity %
+    sorted_labels = sorted(label_scores_percent.items(), key=lambda x: x[1], reverse=True)
+
+    print("Tổng điểm similarity trong nhóm bệnh (%):")
+    for label, percent in sorted_labels:
+        print(f"  → {label}: {percent:.2f}%")
+
+
+# ---------------------- MAIN FLOW ----------------------
+def main():
+    image_path = "app/static/chickenpox.jpg"
+    download_all_required_files()
+    preprocessed_pil, preprocessed_np = preprocess_image(image_path)
+
+    description = generate_description_with_Gemini(image_path)
+    print("Mô tả ảnh:", description)
+
+    print("\nPhân loại ảnh đầy đủ (Full Image):")
+    full_image_vector = embed_image_clip(preprocessed_pil)
+    full_results = search_faiss_index(
+        embedding=full_image_vector,
+        index_path=os.path.join(LOCAL_SAVE_DIR, "faiss_index.bin"),
+        label_path=os.path.join(LOCAL_SAVE_DIR, "labels.npy"),
+        top_k=5
+    )
+    for label, score in full_results:
+        print(f"  → {label} (score: {score:.4f})")
+
+    print("\nPhân tích bất thường (Anomaly Detection):")
+    anomaly_overlay, anomaly_map = generate_anomaly_overlay(preprocessed_pil)
+    overlay_path, anomaly_map_path = save_anomaly_outputs(anomaly_overlay, anomaly_map, image_path)
+
+    anomaly_vector = embed_anomaly_heatmap(overlay_path)
+    anomaly_results = search_faiss_anomaly_index(
+        embedding=anomaly_vector,
+        index_path=os.path.join(LOCAL_SAVE_DIR, "faiss_index_anomaly.bin"),
+        label_path=os.path.join(LOCAL_SAVE_DIR, "labels_anomaly.npy"),
+        top_k=5
+    )
+    for label, score in anomaly_results:
+        print(f"  → {label} (score: {score:.4f})")
+
+    # ========== KẾT HỢP KẾT QUẢ ==========
+    print("\nKết hợp kết quả từ Full Image + Anomaly (voting theo % normalize):")
+
+    combined_results = full_results + anomaly_results
+
+    # Tính tổng similarity (chưa chuẩn hóa)
+    label_scores_raw = {}
+    for label, distance in combined_results:
+        similarity = 1 / (1 + distance)
+        label_scores_raw[label] = label_scores_raw.get(label, 0) + similarity
+
+    # Chuẩn hóa về 100%
+    total_similarity = sum(label_scores_raw.values())
+    label_scores_percent = {label: (score / total_similarity) * 100 for label, score in label_scores_raw.items()}
+
+    # Sắp xếp
+    sorted_labels = sorted(label_scores_percent.items(), key=lambda x: x[1], reverse=True)
+
+    print("Tổng điểm similarity sau khi chuẩn hóa (%):")
+    for label, percent in sorted_labels:
+        print(f"  → {label}: {percent:.2f}%")
+
+    top_label, top_percent = sorted_labels[0]
+    print(f"\nNhãn được chọn (Top-1): {top_label} ({top_percent:.2f}%)")
+
+    group_name_raw = top_label.split("/")[0]
+    normalized_group_name = normalize_group_name(group_name_raw)
+    print(f"Nhóm bệnh (chuẩn hoá): {normalized_group_name}")
+    detailed_group_analysis(
+        image_vector=full_image_vector,
+        anomaly_vector=anomaly_vector,
+        group_name=normalized_group_name,
+        top_k=5
+    )
+    # ======= GỘP KẾT QUẢ TỪ 2 PIPELINE ========
+    combined_results = full_results + anomaly_results
+    aggregated_results = aggregate_combined_results(combined_results)
+
+    print("\nKết quả sau khi gộp nhãn giống nhau:")
+    for label, percent in aggregated_results:
+        print(f"  → {label}: {percent:.2f}%")
+
+    # ======= CHỌN TOP-K NHÃN (ví dụ 3) ========
+    top_labels = [label for label, _ in aggregated_results[:3]]
+
+    # ======= SINH CÂU HỎI PHÂN BIỆT ========
+    questions = generate_discriminative_questions(description, top_labels)
     if not questions:
-        print("Không tạo được câu hỏi phân biệt.")
+        print("Không tạo được câu hỏi.")
         return
 
-    print("\n--- Trả lời các câu hỏi để phân biệt bệnh ---")
-    user_answers = ask_user_questions(questions)
-    
-    print("\n--- Mô tả bổ sung từ người dùng ---")
-    print(user_answers)
-    combined_description = f"{result_medical_entities}\n\n{user_answers}"
-    print("\n--- Đang loại trừ nhãn không phù hợp ---")
-    result =filter_incorrect_labels_by_user_description(combined_description, final_labels)
-    if not result:
-        print("Không có kết quả từ Gemini.")
-        return
-    refined_labels = result.get("giu_lai", [])
-    if not refined_labels:
-        print("Không còn nhãn nào phù hợp. Đề xuất tham khảo bác sĩ.")
-    else:
-        print("Các nhãn còn lại sau loại trừ:")
-        for label_info in refined_labels:
-            label = label_info.get("label")
-            ket_qua = "-".join(label.split("-")[1:])
-            suitability = label_info.get("do_phu_hop")
-            print(f"- {ket_qua} (Mức độ phù hợp: {suitability})")
-            search_final(ket_qua)
-if __name__ == "__main__":
-    mainclient()
+    # ======= HỎI NGƯỜI DÙNG TỪNG CÂU ========
+    user_answers = []
+    for i, question in enumerate(questions):
+        print(f"\nCâu hỏi {i+1}: {question}")
+        answer = input("→ Trả lời của bạn: ")
+        user_answers.append(answer.strip())
+
+    # ======= CHỌN NHÃN CUỐI CÙNG BẰNG LLM ========
+    final_diagnosis = select_final_diagnosis_with_llm(
+        caption=description,
+        labels=top_labels,
+        questions=questions,
+        answers=user_answers
+    )
+
+    print(f"\n Nhãn được chọn cuối cùng bởi LLM: {final_diagnosis}")
