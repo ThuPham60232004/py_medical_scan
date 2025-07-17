@@ -158,6 +158,7 @@ def generate_description_with_Gemini(image_path: str) -> Optional[str]:
     except Exception as e:
         logging.error(f"Lỗi khi tạo caption với Gemini: {e}")
         return None
+    
 def generate_anomaly_overlay(image_pil):
     image_resized = image_pil.resize((224, 224))
     image_np = np.array(image_resized).astype(np.float32) / 255.0
@@ -344,7 +345,6 @@ def detailed_group_analysis(image_vector: np.ndarray, anomaly_vector: np.ndarray
 
     # ========== GỘP NHÃN VÀ VOTING ==========
     print(f"\nGộp nhãn từ 2 pipeline (ảnh thường + anomaly) trong nhóm '{group_name}':")
-
     combined_results = full_group_results + anomaly_group_results
 
     # Tính điểm similarity
@@ -357,6 +357,8 @@ def detailed_group_analysis(image_vector: np.ndarray, anomaly_vector: np.ndarray
     total_similarity = sum(label_scores_raw.values())
     label_scores_percent = {label: (score / total_similarity) * 100 for label, score in label_scores_raw.items()}
 
+    
+
     # Sắp xếp theo similarity %
     sorted_labels = sorted(label_scores_percent.items(), key=lambda x: x[1], reverse=True)
 
@@ -364,11 +366,13 @@ def detailed_group_analysis(image_vector: np.ndarray, anomaly_vector: np.ndarray
     for label, percent in sorted_labels:
         print(f"  → {label}: {percent:.2f}%")
 
+    return sorted_labels
+
 
 # ---------------------- MAIN FLOW ----------------------
 def main():
-    image_path = "app/static/chickenpox.jpg"
-    download_all_required_files()
+    image_path = "app/static/impetigo.jpg"
+    # download_all_required_files()
     preprocessed_pil, preprocessed_np = preprocess_image(image_path)
 
     description = generate_description_with_Gemini(image_path)
@@ -427,14 +431,20 @@ def main():
     group_name_raw = top_label.split("/")[0]
     normalized_group_name = normalize_group_name(group_name_raw)
     print(f"Nhóm bệnh (chuẩn hoá): {normalized_group_name}")
-    detailed_group_analysis(
+
+    
+
+    print("full_results:", full_results)
+    print("..."*10)
+    print("anomaly_results:", anomaly_results)
+    # ======= GỘP KẾT QUẢ TỪ 2 PIPELINE ========
+    combined_results = detailed_group_analysis(
         image_vector=full_image_vector,
         anomaly_vector=anomaly_vector,
         group_name=normalized_group_name,
         top_k=5
     )
-    # ======= GỘP KẾT QUẢ TỪ 2 PIPELINE ========
-    combined_results = full_results + anomaly_results
+    print("\nGộp kết quả từ 2 pipeline (Full Image + Anomaly):",combined_results)
     aggregated_results = aggregate_combined_results(combined_results)
 
     print("\nKết quả sau khi gộp nhãn giống nhau:")
