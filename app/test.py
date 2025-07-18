@@ -1,3 +1,4 @@
+import json
 import os
 import cv2
 import numpy as np
@@ -13,7 +14,7 @@ from pathlib import Path
 import re
 load_dotenv()
 
-GCS_BUCKET = "kltn-2025"
+GCS_BUCKET = "test_dataset_2_medical"
 GCS_IMAGE_PATH = "uploaded_images/"
 GCS_KEY_PATH = "app/gsc-key.json"
 
@@ -114,18 +115,24 @@ def clean_predicted_label(label: str) -> str:
         return ""
     parts = label.strip().split("-")
     if len(parts) > 1:
-        return "-".join(parts[1:]).lower()
+        return " ".join(parts[1:]).lower()  # Thay dấu gạch ngang bằng khoảng trắng
     return label.lower()
 
 def clean_actual_label(label: str) -> str:
-    return re.sub(r"\(\d+\)", "", label).strip().lower()
+    # Thay gạch ngang bằng khoảng trắng
+    text = label.replace("-", " ")
+    # Chỉ giữ lại ký tự chữ (a-z, A-Z) và khoảng trắng
+    result = ''.join(char for char in text if char.isalpha() or char.isspace())
+    return result
+
 def test_process_pipeline():
     image_dir = "app/static/data_test"
     right_result = 0
     wrong_result = 0
     total_images = 0
+    results = []
 
-    for image_path in get_all_images(image_dir):
+    for idx, image_path in enumerate(get_all_images(image_dir), 1):
         image_name = os.path.basename(image_path).split(".")[0].replace("_", " ").lower()
 
         print(f"\n=== Processing: {image_path} ===")
@@ -137,21 +144,53 @@ def test_process_pipeline():
         print(f"Dự đoán: {predicted_label}")
         print(f"Thực tế: {actual_label}")
 
-        if predicted_label.strip() == actual_label.strip():
-            print("Kết quả: ĐÚNG")
+        is_correct = predicted_label.strip() == actual_label.strip()
+        result_status = "ĐÚNG" if is_correct else "SAI"
+        print(f"Kết quả: {result_status}")
+
+        if is_correct:
             right_result += 1
         else:
-            print("Kết quả: SAI")
             wrong_result += 1
         total_images += 1
+
+        # Thêm thông tin vào danh sách kết quả, chuyển image_path thành string
+        results.append({
+            "stt": idx,
+            "ảnh": str(image_path),  # Chuyển WindowsPath thành string
+            "tên ảnh": image_name,
+            "đầu vào": actual_label,
+            "đầu ra": predicted_label,
+            "kết quả": result_status
+        })
 
     if total_images == 0:
         print("Không tìm thấy ảnh nào trong thư mục test.")
         return
 
+    # Tổng kết
+    summary = {
+        "kết quả đúng": right_result,
+        "tỉ lệ đúng": f"{right_result / total_images * 100:.2f}%",
+        "kết quả sai": wrong_result,
+        "tỉ lệ sai": f"{wrong_result / total_images * 100:.2f}%"
+    }
+
+    # Tạo dữ liệu JSON
+    output_data = {
+        "results": results,
+        "summary": summary
+    }
+
+    # Lưu vào file JSON
+    with open("test_results.json", "w", encoding="utf-8") as f:
+        json.dump(output_data, f, ensure_ascii=False, indent=4)
+
     print("\n================== TỔNG KẾT ==================")
     print(f"Kết quả đúng : {right_result}, Tỉ lệ đúng là: {right_result / total_images * 100:.2f}%")
-    print(f"Kết quả sai  : {wrong_result}, Tỉ lệ sai là: {wrong_result / total_images * 100:.2f}%")    
+    print(f"Kết quả sai  : {wrong_result}, Tỉ lệ sai là: {wrong_result / total_images * 100:.2f}%")
+    print("Kết quả đã được lưu vào file 'test_results.json'.")
+    
 def main():
     load_faiss_index()
     test_process_pipeline()
