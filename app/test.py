@@ -249,7 +249,7 @@ def clean_actual_label(label: str) -> str:
     return result
 
 def test_process_pipeline():
-    image_dir = "app/static/data_test_30000"
+    image_dir = "app/static/test_data_searching"
     right_result = 0
     wrong_result = 0
     total_images = 0
