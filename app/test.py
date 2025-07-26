@@ -14,7 +14,7 @@ from pathlib import Path
 import re
 load_dotenv()
 
-GCS_BUCKET = "test_dataset_2_medical"
+GCS_BUCKET = "test_storage_1000000image"
 GCS_IMAGE_PATH = "uploaded_images/"
 GCS_KEY_PATH = "app/gsc-key.json"
 
@@ -126,7 +126,7 @@ def clean_actual_label(label: str) -> str:
     return result
 
 def test_process_pipeline():
-    image_dir = "app/static/data_test"
+    image_dir = "app/static/test_data_searching-200000"
     right_result = 0
     wrong_result = 0
     total_images = 0
