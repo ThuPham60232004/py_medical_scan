@@ -9,7 +9,6 @@ def startup_event():
     """Tự động quét và xử lý ảnh khi server khởi động"""
     thread = threading.Thread(target=main) 
     thread.start()
-
 @app.get("/")
 async def root():
     return {"message": "Image Processing API is running!"}
