@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 load_dotenv()
 login(token=os.getenv("HUGGINGFACE_TOKEN"))
 
-GCS_BUCKET = "storage3000image"
+GCS_BUCKET = "test_storage_1000000image"
 GCS_IMAGE_PATH = "uploaded_images/"
 GCS_KEY_PATH = storage.Client.from_service_account_json("app/gsc-key.json")
 
@@ -850,8 +850,126 @@ def get_all_images(directory: str) -> list:
     exts = [".jpg", ".jpeg", ".png", ".bmp"]
     return [p for p in Path(directory).rglob("*") if p.is_file() and p.suffix.lower() in exts]
 
-def test_process_pipeline():
-    image_dir = "app/static/data_test"
+# Cấu trúc bệnh tách riêng để dễ bảo trì
+DISEASE_STRUCTURE_PROMPT = """
+    Đây là cấu trúc của dữ liệu bệnh:
+    Bacterial_infections
+        Cellulitis
+        Folliculitis
+        Impetigo
+    Fungal_infections
+        Nail Fungus
+        Tinea Capitis
+        Athlete Foot
+        Ringworm
+        Candidiasis
+    Parasitic_Infections
+        Infestations_Bites
+        Head Lice
+    Virus
+        Warts
+        Monkeypox
+        Sarampion
+        Herpes
+        Herpes Zoster
+        Chickenpox
+    LIGHT DISEASES AND DISORDERS PHOTOS
+        Actinic Keratosis
+    PIGMENTARY DISORDERS
+        Vitiligo
+    INFLAMMATORY & AUTOIMMUNE
+        Dyshidrotic Eczema
+        Bullous Diseases
+        Contact Dermatitis
+        DrugEruption
+        Eczema
+            Atopic Dermatitis
+        Exanthems and Drug Eruptions
+        Lichen Planus
+        Psoriasis
+        Seborrheic Dermatitis
+        Urticaria
+        Vasculitis
+    OTHER - UNCLASSIFIED
+        Acne and Rosacea
+            Acne
+            Rosacea
+        Alopecia Areata
+        Male Pattern Baldness
+        Milia
+        Systemic Disease
+        Telogen Effluvium
+        Unknown Normal
+    NEOPLASMS & TUMORS
+        Benign
+            Nevus
+            Seborrh Keratosis
+            Pigmented Benign Keratosis
+            Dermatofibroma
+            Vascular Tumors
+        Malignant
+            Melanoma
+            Carcinoma
+                Basal Cell Carcinoma
+                Squamous Cell Carcinoma
+"""
+
+def check_result(predict: str, result: str) -> str:
+    if not result:
+        return "Không có kết quả"
+    if not predict:
+        return "Không có dự đoán"
+
+    prompt = textwrap.dedent(f"""
+        {DISEASE_STRUCTURE_PROMPT}
+
+        Đây là cấu trúc của các bệnh dựa vào dự đoán: {predict} có thể là 1 hoặc nhiều dự đoán, và kết quả tìm kiếm: {result}.
+        - Nếu cả hai giống nhau thì kết quả đúng.
+        - Nếu {predict} nằm chung nhóm ngoài cùng của {result} dựa trên cấu trúc trên thì kết quả đúng nhóm.
+        - Còn lại kết quả là sai.
+        Trả lời ngắn gọn: 'Đúng','Đúng nhóm' hoặc 'Sai' và không giải thích.
+    """)
+
+    try:
+        model = genai.GenerativeModel("gemini-2.5-pro")
+        response = model.generate_content(prompt)
+        result_text = response.text.strip()
+
+        return result_text if result_text else "Không có thông tin"
+
+    except Exception as e:
+        logging.exception("Lỗi khi kiểm tra kết quả:")
+        return "Xảy ra lỗi trong quá trình kiểm tra kết quả"
+
+def check_result(predict: str, result: str) -> str:
+    if not result:
+        return "Không có kết quả"
+    if not predict:
+        return "Không có dự đoán"
+
+    prompt = textwrap.dedent(f"""
+        {DISEASE_STRUCTURE_PROMPT}
+
+        Đây là cấu trúc của các bệnh dựa vào dự đoán: {predict} có thể là 1 hoặc nhiều dự đoán, và kết quả tìm kiếm: {result}.
+        - Nếu cả hai giống nhau thì kết quả đúng.
+        - Nếu {predict} nằm chung nhóm ngoài cùng của {result} dựa trên cấu trúc trên thì kết quả đúng nhóm.
+        - Còn lại kết quả là sai.
+        Trả lời ngắn gọn: 'Đúng','Đúng nhóm' hoặc 'Sai' và không giải thích.
+    """)
+
+    try:
+        model = genai.GenerativeModel("gemini-2.5-pro")
+        response = model.generate_content(prompt)
+        result_text = response.text.strip()
+
+        return result_text if result_text else "Không có thông tin"
+
+    except Exception as e:
+        logging.exception("Lỗi khi kiểm tra kết quả:")
+        return "Xảy ra lỗi trong quá trình kiểm tra kết quả"
+
+def test_process_pipeline(start_index=0):
+    image_dir = "app/static/test_data_searching-200000"
     file_path = "app/static/test_result.json"
 
     # Lấy danh sách tất cả ảnh và sắp xếp để đảm bảo thứ tự nhất quán
@@ -860,51 +978,17 @@ def test_process_pipeline():
         print("[!] Không tìm thấy ảnh trong thư mục.")
         return []
 
-    # Hiển thị danh sách ảnh để người dùng chọn
+    # Kiểm tra nếu start_index hợp lệ
+    if start_index < 0 or start_index >= len(all_images):
+        print(f"[!] Chỉ số bắt đầu {start_index + 1} không hợp lệ. Tổng số ảnh: {len(all_images)}")
+        return []
+
+    # Hiển thị danh sách ảnh
     print("\nDanh sách ảnh có sẵn:")
     for idx, img_path in enumerate(all_images, 1):
         print(f"{idx}. {os.path.basename(img_path)}")
 
-    # Yêu cầu người dùng chọn ảnh bằng số thứ tự
-    while True:
-        try:
-            choice = input("\nNhập số thứ tự của ảnh bạn muốn xử lý (hoặc 'q' để thoát): ").strip()
-            if choice.lower() == 'q':
-                print("Đã thoát chương trình.")
-                return []
-            choice = int(choice)
-            if 1 <= choice <= len(all_images):
-                break
-            else:
-                print(f"Vui lòng nhập số từ 1 đến {len(all_images)}.")
-        except ValueError:
-            print("Vui lòng nhập một số hợp lệ hoặc 'q' để thoát.")
-
-    # Lấy ảnh được chọn
-    image_path = all_images[choice - 1]
-    image_name = os.path.basename(image_path)
-    image_name_cleaned = clean_image_name(image_name)
-
-    # Xử lý ảnh được chọn
-    print(f"\n=== Đang xử lý ảnh: {image_path} ===")
-    result, user_description, questions, user_answers = process_pipeline(str(image_path), image_name_cleaned)
-
-    print(f"Dự đoán: {result}")
-    print(f"Thực tế: {image_name_cleaned}")
-
-    # Kiểm tra đúng/sai
-    is_correct = False
-    if result:
-        if isinstance(result, str):
-            is_correct = image_name_cleaned.lower() == result.lower()
-        elif isinstance(result, list):
-            is_correct = any(image_name_cleaned.lower() == label_info.get("label", "").lower() for label_info in result)
-    ket_qua = "Đúng" if is_correct else "Sai"
-
-    print(f"Kết quả: {ket_qua}")
-    print(f"Đường dẫn ảnh: {image_path}")
-
-    # Đọc file JSON hiện có (nếu tồn tại) để lấy danh sách kết quả cũ
+    # Tự động xử lý từ ảnh thứ start_index đến hết
     existing_results = []
     if os.path.exists(file_path):
         try:
@@ -917,36 +1001,61 @@ def test_process_pipeline():
             print("Lỗi đọc file JSON, khởi tạo danh sách mới.")
             existing_results = []
 
-    # Tạo kết quả mới
-    new_result = {
-        "STT": len(existing_results) + 1,  # Tăng STT dựa trên số lượng kết quả hiện có
-        "Ảnh": image_name,
-        "Dự đoán": result,
-        "Thực tế": image_name_cleaned,
-        "Kết quả": ket_qua,
-        "Đường dẫn": str(image_path),
-        "Mô tả người dùng": user_description,
-        "Câu hỏi phân biệt": questions,
-        "Trả lời câu hỏi": user_answers
-    }
+    for idx, image_path in enumerate(all_images[start_index:], start_index + 1):  # Bắt đầu từ start_index
+        image_name = os.path.basename(image_path)
+        image_name_cleaned = clean_image_name(image_name)
 
-    # Thêm kết quả mới vào danh sách
-    existing_results.append(new_result)
+        # Xử lý ảnh
+        print(f"\n=== Đang xử lý ảnh {idx}: {image_path} ===")
+        result, user_description, questions, user_answers = process_pipeline(str(image_path), image_name_cleaned)
+        # Lấy các nhãn label trong result
+        result = [item["label"] for item in result]
+        print(f"Dự đoán: {result}")
+        print(f"Thực tế: {image_name_cleaned}")
 
-    # Ghi lại toàn bộ danh sách vào file JSON
-    try:
-        with open(file_path, "w", encoding="utf-8") as file:
-            json.dump(existing_results, file, ensure_ascii=False, indent=4)
-        print(f"\nHoàn tất. Kết quả mới đã được nối thêm vào {file_path}.")
-    except Exception as e:
-        print(f"Lỗi khi ghi vào file {file_path}: {e}")
+        # Kiểm tra đúng/sai
+        is_correct = check_result(result, image_name_cleaned)
+
+        print(f"Kết quả: {is_correct}")
+        print(f"Đường dẫn ảnh: {image_path}")
+
+        # Tạo kết quả mới
+        new_result = {
+            "STT": len(existing_results) + 1,  # Tăng STT dựa trên số lượng kết quả hiện có
+            "Ảnh": image_name,
+            "Dự đoán": result,
+            "Thực tế": image_name_cleaned,
+            "Kết quả": is_correct,
+            "Đường dẫn": str(image_path),
+            "Mô tả người dùng": user_description,
+            "Câu hỏi phân biệt": questions,
+            "Trả lời câu hỏi": user_answers
+        }
+
+        # Thêm kết quả mới vào danh sách
+        existing_results.append(new_result)
+
+        # Ghi lại toàn bộ danh sách vào file JSON
+        try:
+            with open(file_path, "w", encoding="utf-8") as file:
+                json.dump(existing_results, file, ensure_ascii=False, indent=4)
+            print(f"\nHoàn tất. Kết quả mới đã được nối thêm vào {file_path}.")
+        except Exception as e:
+            print(f"Lỗi khi ghi vào file {file_path}: {e}")
 
     return existing_results
 
 def mainclient():
     download_from_gcs()
     load_faiss_index()
-    test_process_pipeline()
+    try:
+        start_index = int(input("Nhập vị trí bắt đầu (ví dụ: 10 để bắt đầu từ ảnh thứ 10): ")) - 1
+        if start_index < 0:
+            print("Chỉ số bắt đầu phải là số dương.")
+            return
+        test_process_pipeline(start_index=start_index)
+    except ValueError:
+        print("Vui lòng nhập một số nguyên hợp lệ.")
 
 if __name__ == "__main__":
     mainclient()
