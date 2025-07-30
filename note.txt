@@ -1,0 +1,1 @@
+Please prompt more so that LLM can generate different questions between the diseases so that the disease can be found immediately.

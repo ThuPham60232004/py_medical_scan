@@ -240,7 +240,8 @@ def main():
         caption=description,
         labels=disease_primary,
         questions=questions,
-        answers=user_answers
+        answers=user_answers,
+        group_disease_name=normalized_group_diagnosis
     )
 
     print(f"\n Nhãn được chọn cuối cùng bởi LLM: {final_diagnosis}")

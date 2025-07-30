@@ -14,54 +14,27 @@ def generate_description_with_Gemini(image_path: str) -> Optional[str]:
         new_size = (img.width * 2, img.height * 2)
         img = img.resize(new_size, Image.LANCZOS)  
         model = genai.GenerativeModel('gemini-2.5-pro')
-        prompt = """
-Hãy quan sát kỹ bức ảnh da bên dưới và mô tả lại những đặc điểm có thể nhận biết bằng mắt thường, bằng tiếng Việt chính xác và trung lập.
+       prompt = """
+Hãy quan sát kỹ bức ảnh da bên dưới và mô tả lại một cách trung lập, chính xác, chỉ dựa trên những gì có thể nhìn thấy bằng mắt thường trong ảnh, bằng tiếng Việt.
 
-Nội dung mô tả nên bao gồm các yếu tố sau:
+Yêu cầu mô tả:
+- Vị trí tổn thương (xuất hiện ở vùng nào trên cơ thể).
+- Số lượng và kích thước tổn thương (một hay nhiều, ước lượng kích thước).
+- Màu sắc chủ đạo và sự đồng nhất màu sắc.
+- Đặc điểm bề mặt da (trơn láng, khô, bong vảy, sần sùi, đóng mày, loét, mụn nước, mủ...).
+- Bờ tổn thương (rõ hay mờ, đều hay không đều, dạng vòng hay lan tỏa).
+- Tính đối xứng (có xuất hiện hai bên cơ thể không).
+- Kiểu phân bố (rải rác, tập trung thành cụm, theo mảng lớn, theo đường...).
+- Dấu hiệu bất thường khác (sưng nề, chảy dịch, mủ vàng, hoại tử, lở loét, đường hầm dưới da...).
 
-1. **Vị trí** tổn thương:  
-   - Xuất hiện ở vùng nào? (ví dụ: mặt, cổ, lưng, lòng bàn tay, lòng bàn chân, kẽ ngón tay, vùng sinh dục...)
-
-2. **Số lượng và kích thước**:  
-   - Có bao nhiêu tổn thương? (một hay nhiều)
-   - Ước lượng kích thước tổn thương (dưới 5mm, khoảng 1–2cm, lan rộng toàn vùng...)
-
-3. **Màu sắc**:  
-   - Màu chủ đạo là gì? (đỏ, hồng, tím, nâu, trắng, vàng mủ, v.v.)
-   - Có đồng nhất không, hay có nhiều vùng màu khác nhau?
-
-4. **Bề mặt da**:  
-   - Tổn thương có trơn láng, khô, bong vảy, sần sùi, đóng mày, loét, hay có mụn nước, mủ?
-
-5. **Bờ tổn thương**:  
-   - Ranh giới rõ hay mờ? Bờ đều hay không đều? Có dạng vòng hay lan tỏa?
-
-6. **Tính đối xứng**:  
-   - Tổn thương có xuất hiện hai bên cơ thể một cách đối xứng không?
-
-7. **Kiểu phân bố**:  
-   - Tổn thương rải rác, tập trung thành cụm, theo mảng lớn, hay theo đường (ví dụ: dọc theo dây thần kinh)?
-
-8. **Dấu hiệu bất thường khác**:  
-   - Có sưng nề, chảy dịch, có mủ vàng, hoại tử, lở loét, hoặc các dấu hiệu đặc biệt như **đường hầm dưới da** không?
-
----
-
-🎯 **Lưu ý cực kỳ quan trọng**:  
 Lưu ý cực kỳ quan trọng:
-Bạn chỉ nên mô tả những gì quan sát được bằng mắt thường trong ảnh. Không dự đoán, không suy luận đặc điểm có thể liên quan đến bệnh lý. Không đưa vào các mô tả gợi ý từ kinh nghiệm y khoa, chỉ mô tả trung lập.
-- **Nhiễm nấm (fungal-infections)**: bờ rõ ràng, hình tròn/vòng, bong vảy nhẹ, thường ở vùng ẩm (bẹn, kẽ tay, chân).  
-- **Virus (virus)**: mụn nước nhỏ, ban đỏ dạng đối xứng, tổn thương theo cụm hoặc theo dây thần kinh.  
-- **Vi khuẩn (bacterial-infections)**: có mủ, sưng nóng đỏ đau, loét, vảy vàng, tổn thương sâu.  
-- **Ký sinh trùng (parasitic-infections)**: ngứa dữ dội, có đường hầm dưới da, sẩn nhỏ hoặc mụn nước rải rác ở kẽ ngón, thắt lưng, mông.
+- Chỉ mô tả những gì quan sát được bằng mắt thường trong ảnh.
+- Không được đưa ra bất kỳ chẩn đoán, suy luận y khoa, hoặc gợi ý bệnh lý nào.
+- Không sử dụng kinh nghiệm y khoa, không dự đoán nguyên nhân.
+- Không sử dụng bullet point, markdown, ký hiệu đặc biệt, hoặc xuống dòng.
+- Trả về kết quả dưới dạng một đoạn văn y khoa mô tả, rõ ràng, trung lập, duy nhất.
 
-Lưu ý:
-- Không được đưa ra bất kỳ chẩn đoán hoặc suy luận y tế nào.
-- Chỉ mô tả khách quan những gì nhìn thấy được trong ảnh.
-- Không sử dụng bullet point, markdown hay ký hiệu đặc biệt.
-
-Trả về kết quả dưới dạng đoạn văn y khoa mô tả, rõ ràng, trung lập.
-
+Chỉ trả về đoạn mô tả, không thêm bất kỳ thông tin nào khác.
 """
         response = model.generate_content([prompt, img])
         caption = response.text.replace("\n", " ").strip()

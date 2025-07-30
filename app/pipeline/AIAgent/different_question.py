@@ -18,8 +18,16 @@ def generate_discriminative_questions(
     if model is None:
         model = genai.GenerativeModel("gemini-2.5-pro")
 
-    # Danh sách ngữ cảnh đa dạng để mô hình không trả lời giống nhau
     variation_prompts = [
+        "Hãy đặt câu hỏi giúp loại trừ ngay lập tức một bệnh nếu câu trả lời phù hợp.",
+        "Tập trung vào triệu chứng hoặc dấu hiệu chỉ có ở một bệnh duy nhất trong nhóm này.",
+        "Đặt câu hỏi về đặc điểm đặc trưng (pathognomonic) mà chỉ một bệnh có.",
+        "Hãy hỏi về dấu hiệu 'red flag' giúp xác định hoặc loại trừ bệnh ngay.",
+        "Đặt câu hỏi mà nếu trả lời 'có' hoặc 'không' sẽ giúp chẩn đoán chính xác nhất.",
+        "Tập trung vào các yếu tố quyết định, không hỏi chung chung.",
+        "Hãy hỏi về triệu chứng hoặc yếu tố mà chỉ một bệnh trong danh sách này có.",
+        "Đặt câu hỏi giúp phân biệt nhanh nhất, tránh các triệu chứng trùng lặp.",
+        "Hãy hỏi như một bác sĩ muốn xác định bệnh ngay lập tức chỉ qua một vài câu hỏi then chốt.",
         "Hãy đặt câu hỏi như khi đang phỏng vấn bệnh sử để phân biệt bệnh rõ ràng.",
         "Tập trung vào các yếu tố loại trừ, ví dụ: vị trí tổn thương, cảm giác, diễn tiến theo thời gian.",
         "Đặt câu hỏi theo hướng lâm sàng thực tế: nếu đặc điểm này có thì bệnh nào sẽ bị loại bỏ?",
@@ -32,7 +40,6 @@ def generate_discriminative_questions(
     ]
     variation = random.choice(variation_prompts)
 
-    # Prompt chính
     prompt = f"""
 Bạn là bác sĩ da liễu chuyên về nhóm bệnh **{group_disease_name}**.
 Bạn đang xem xét một ảnh da liễu với mô tả như sau:
@@ -46,6 +53,8 @@ Tôi đang phân vân giữa các bệnh sau: {', '.join(labels)}.
 
 Yêu cầu:
 - Viết ra 3 câu hỏi nhằm **phân biệt rõ ràng** các bệnh trên.
+- Ưu tiên các câu hỏi giúp xác định hoặc loại trừ bệnh ngay lập tức, tránh hỏi chung chung.
+- Tập trung vào triệu chứng, dấu hiệu đặc trưng, hoặc yếu tố chỉ có ở một bệnh.
 - Mỗi câu hỏi cần hướng đến triệu chứng, cảm giác, vị trí, thời điểm, diễn tiến... có khả năng **loại trừ bệnh này so với bệnh khác**.
 - Không được hỏi câu chung chung như “bạn có ngứa không?” — thay vào đó hãy hỏi theo cách **giúp nhận diện đặc trưng riêng**.
 - Câu hỏi phải: rõ ràng, không lặp ý, không mô tả lại ảnh, không giải thích.
