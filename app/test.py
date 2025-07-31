@@ -626,5 +626,5 @@ def test_process_pipeline():
     return results
 
 if __name__ == "__main__":
-    # download_all_required_files()
+    download_all_required_files()
     test_process_pipeline()
